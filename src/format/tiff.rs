@@ -79,6 +79,15 @@ fn frame_from(
 ) -> Result<ImageFrame, String> {
     use tiff::ColorType;
     use tiff::decoder::DecodingResult;
+    // Sub-8-bit samples arrive bit-packed (MSB-first, per row): expand to
+    // full-range 8-bit before the sample-layout conversions below.
+    let bits = ct.bit_depth();
+    let img = match ((1..8).contains(&bits), img) {
+        (true, DecodingResult::U8(v)) => {
+            DecodingResult::U8(unpack_bits(&v, w, h, samples_per_pixel(ct), bits)?)
+        }
+        (_, img) => img,
+    };
     let frame = |bit_depth, has_alpha, pixels| ImageFrame {
         width: w,
         height: h,
@@ -128,6 +137,51 @@ fn frame_from(
             ))
         }
     })
+}
+
+fn samples_per_pixel(ct: tiff::ColorType) -> usize {
+    use tiff::ColorType::*;
+    match ct {
+        Gray(_) => 1,
+        GrayA(_) => 2,
+        RGB(_) => 3,
+        RGBA(_) | CMYK(_) | CMYKA(_) => 4,
+        _ => 1,
+    }
+}
+
+/// Expand bit-packed sub-8-bit TIFF samples to full-range u8
+/// (v -> v*255/(2^bits-1)); rows may be byte-padded to `stride`.
+fn unpack_bits(
+    buf: &[u8],
+    w: u32,
+    h: u32,
+    samples: usize,
+    bits: u8,
+) -> Result<Vec<u8>, String> {
+    let (w, h, bits) = (w as usize, h as usize, bits as usize);
+    let packed_row = (w * samples * bits).div_ceil(8);
+    let stride = buf
+        .len()
+        .checked_div(h)
+        .filter(|s| *s >= packed_row)
+        .ok_or("TIFF sub-8-bit buffer size mismatch")?;
+    let max = (1u32 << bits) - 1;
+    let mut out = Vec::with_capacity(w * samples * h);
+    for row in buf.chunks_exact(stride).take(h) {
+        let (mut acc, mut acc_bits, mut bi) = (0u32, 0usize, 0usize);
+        for _ in 0..w * samples {
+            while acc_bits < bits {
+                acc = (acc << 8) | u32::from(row[bi]);
+                bi += 1;
+                acc_bits += 8;
+            }
+            let v = (acc >> (acc_bits - bits)) & max;
+            acc_bits -= bits;
+            out.push((v * 255 / max) as u8);
+        }
+    }
+    Ok(out)
 }
 
 fn sample_kind(r: &tiff::decoder::DecodingResult) -> &'static str {

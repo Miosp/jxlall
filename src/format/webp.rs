@@ -10,6 +10,15 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         return Err("animated WebP not supported (stills only)".into());
     }
 
+    // Wild files often carry the JPEG-style `Exif\0\0` prefix in the EXIF
+    // chunk; the JXL Exif box and our parser both expect a bare TIFF header.
+    let exif = std::mem::take(&mut info.exif).map(|mut e| {
+        if e.starts_with(b"Exif\0\0") {
+            e.drain(..6);
+        }
+        e
+    });
+
     let (px, w, h) = if info.has_alpha {
         zenwebp::oneshot::decode_rgba(data).map_err(|e| format!("WebP decode: {e}"))?
     } else {
@@ -20,8 +29,9 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     let orientation = info
         .orientation
         .map(|o| Orientation::new(o as u8))
-        .or_else(|| Orientation::from_exif(info.exif.as_deref()))
+        .or_else(|| Orientation::from_exif(exif.as_deref()))
         .unwrap_or_default();
+
 
     let frame = ImageFrame {
         width: w,
@@ -35,7 +45,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         DecodedImage::new(
             frame,
             ColorDesc::new(None, std::mem::take(&mut info.icc_profile)),
-            MetaBoxes::new(std::mem::take(&mut info.exif), std::mem::take(&mut info.xmp)),
+            MetaBoxes::new(exif, std::mem::take(&mut info.xmp)),
         )
         .orientation(orientation),
     )))
