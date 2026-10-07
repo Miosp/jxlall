@@ -1,0 +1,25 @@
+[package]
+name = "photo-convert"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+compio = { version = "0.19", features = ["runtime", "fs"] }
+jpegxl-sys = { version = "0.13", features = ["vendored"] }
+heic = { version = "0.1.6", features = ["std", "av1"] }
+zenwebp = "0.4"
+zune-jpeg = "0.5"
+ignore = "0.4"
+jpeg-decoder = "0.3"
+png = "0.18"
+tiff = "0.11"
+kamadak-exif = "0.6"
+clap = { version = "4", features = ["derive"] }
+ultrahdr-core = { version = "0.4", default-features = false, features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+lto = "thin"
