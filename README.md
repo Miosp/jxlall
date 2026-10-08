@@ -29,6 +29,9 @@ Not supported, with reason:
 - CICP preserved natively when the source carries it (HEIF `nclx`, PNG `cICP`,
   AVIF): mapped to JXL color encoding enums ( primaries/TF/white point ).
 - Otherwise the source ICC profile is passed through byte-exact.
+- A malformed ICC profile (bad header size or `acsp` signature) is dropped
+  with a note and the image converts with default color, rather than failing.
+  Same for a gain map that cannot be decoded: the base image still converts.
 - HDR: PQ → 10 000 nits, HLG → 1 000 nits intensity target.
 - Gain maps (ISO 21496-1, AVIF `tmap` or Apple `hdrgainmap` XMP) are
   re-serialized into the JXL `jhgm` box; the gain map image is re-encoded

@@ -66,9 +66,13 @@ fn decode_gain_map(data: &[u8], info: &heic::ImageInfo) -> Result<Option<GainMap
     if !info.has_gain_map {
         return Ok(None);
     }
-    let g = heic::DecoderConfig::new()
-        .decode_gain_map(data)
-        .map_err(|e| format!("gain map decode: {e}"))?;
+    let g = match heic::DecoderConfig::new().decode_gain_map(data) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("note: gain map decode failed ({e}), converting base image without it");
+            return Ok(None);
+        }
+    };
     crate::domain::from_heic(g)
 }
 
