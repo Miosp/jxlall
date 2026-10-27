@@ -170,6 +170,11 @@ fn extract_attr(xmp: &str, name: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// AvifTmap layout: version(1), minimum/writer version(2 + 2), flags(1),
+    /// two headroom fractions(2 x 8), then per channel five fractions(5 x 8).
+    const TMAP_CHANNELS_OFFSET: usize = 22;
+    const TMAP_CHANNEL_LEN: usize = 40;
+
     #[test]
     fn apple_xmp_without_fields_yields_none() {
         let xmp = r#"<rdf:Description HDRGainMap:HDRGainMapVersion="65536"/>"#;
@@ -229,10 +234,19 @@ mod tests {
         md.channels = [with_max(1.0), with_max(2.0), with_max(3.0)];
         let tmap = serialize_iso21496_fmt(&md, Iso21496Format::AvifTmap);
         assert!(tmap_metadata(&tmap).is_err());
-        // Equal channels but the multichannel flag set: still 3 declared.
-        md.channels = [with_max(2.0); 3];
+        // Three declared channels that happen to be equal: only the flag
+        // reveals them. Copy channel 0 over channels 1 and 2.
+        md.channels = [with_max(2.0), with_max(3.0), with_max(4.0)];
         let mut tmap = serialize_iso21496_fmt(&md, Iso21496Format::AvifTmap);
-        tmap[TMAP_FLAGS_OFFSET] |= TMAP_FLAG_MULTI_CHANNEL;
+        assert_eq!(tmap.len(), TMAP_CHANNELS_OFFSET + 3 * TMAP_CHANNEL_LEN);
+        let first = TMAP_CHANNELS_OFFSET..TMAP_CHANNELS_OFFSET + TMAP_CHANNEL_LEN;
+        let channel0 = tmap[first].to_vec();
+        for i in 1..3 {
+            let at = TMAP_CHANNELS_OFFSET + i * TMAP_CHANNEL_LEN;
+            tmap[at..at + TMAP_CHANNEL_LEN].copy_from_slice(&channel0);
+        }
+        let parsed = parse_iso21496_fmt(&tmap, Iso21496Format::AvifTmap).unwrap();
+        assert!(parsed.is_single_channel());
         assert!(tmap_metadata(&tmap).is_err());
     }
 }
