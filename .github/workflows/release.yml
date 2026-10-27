@@ -1,0 +1,134 @@
+# Pushing a tag vX.Y.Z builds every target natively and publishes a GitHub
+# release. A manual run builds and smoke-tests everything without publishing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: read
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          if [ "$REF_TYPE" = tag ] && [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc builds on the oldest runner image for wide distro support.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          # Static musl builds run natively inside Alpine.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04, alpine: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, alpine: true }
+          - { target: x86_64-apple-darwin, os: macos-26-intel }
+          - { target: aarch64-apple-darwin, os: macos-26 }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025 }
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCHIVE: jxlall-${{ needs.version.outputs.version }}-${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - if: ${{ !matrix.alpine }}
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        if: ${{ !matrix.alpine }}
+        shell: bash
+        run: |
+          if [[ $TARGET == *windows* ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo build --release --locked --target "$TARGET"
+
+      - name: Build (Alpine)
+        if: ${{ matrix.alpine }}
+        run: .github/build-alpine.sh "$TARGET"
+
+      - name: Smoke test
+        shell: bash
+        run: .github/smoke/run.sh "target/$TARGET/release/jxlall"
+
+      - name: Package
+        if: ${{ !contains(matrix.target, 'windows') }}
+        run: |
+          mkdir "$ARCHIVE"
+          cp "target/$TARGET/release/jxlall" LICENSE README.md "$ARCHIVE/"
+          tar -czf "$ARCHIVE.tar.gz" "$ARCHIVE"
+
+      - name: Package (Windows)
+        if: ${{ contains(matrix.target, 'windows') }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory $env:ARCHIVE | Out-Null
+          Copy-Item "target/$env:TARGET/release/jxlall.exe", LICENSE, README.md $env:ARCHIVE
+          Compress-Archive $env:ARCHIVE "$env:ARCHIVE.zip"
+
+      - if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.ARCHIVE }}.*
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}.*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - working-directory: dist
+        run: sha256sum jxlall-* > SHA256SUMS
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "$TAG" --generate-notes

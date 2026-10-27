@@ -3,6 +3,8 @@ name = "jxlall"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Convert a photo library to JPEG XL, keeping pixels, color and metadata"
+repository = "https://github.com/Miosp/jxlall"
 
 [dependencies]
 compio = { version = "0.19", features = ["runtime", "fs", "polling"] }

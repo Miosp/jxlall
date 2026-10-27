@@ -1,8 +1,19 @@
 # jxlall
 
 Converts a photo library to JPEG XL, keeping pixels, color profiles,
-EXIF/XMP and HDR gain maps wherever the format allows. Single binary for Linux and Windows,
+EXIF/XMP and HDR gain maps wherever the format allows. Single binary,
 converts files in parallel.
+
+## Install
+
+Download a binary for Linux, macOS or Windows (x86-64 or arm64) from
+[Releases](https://github.com/Miosp/jxlall/releases). On Linux, the `musl`
+builds are fully static; the `gnu` builds need glibc 2.35 and libstdc++
+from GCC 11 or newer. Each release lists SHA-256 checksums, and each
+archive has a GitHub build attestation (`gh attestation verify <archive> --repo Miosp/jxlall`).
+
+To build from source you need Rust 1.93+, CMake and a C++ compiler (libjxl is
+compiled in): `cargo install --locked --git https://github.com/Miosp/jxlall`.
 
 ## Inputs
 
