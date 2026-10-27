@@ -18,9 +18,16 @@ kamadak-exif = "0.6"
 clap = { version = "4", features = ["derive"] }
 ultrahdr-core = { version = "0.4", default-features = false, features = ["std"] }
 roxmltree = "0.21.1"
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-31"] }
+ureq = "3.5"
+directories = "6"
+sha2 = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [profile.release]
 lto = "thin"
+
+[dev-dependencies]
+jpeg-encoder = "0.7"

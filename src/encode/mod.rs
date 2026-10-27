@@ -102,7 +102,14 @@ unsafe fn set_photon_noise(
 }
 
 /// Lossless JPEG → JXL recompression (jbrd). JPEG bytes must be a complete file.
-pub fn encode_jpeg(jpeg: &[u8], settings: &EncodeSettings) -> Result<Vec<u8>, EncodeError> {
+///
+/// `extra_xmp`: `xml ` box for a JPEG without XMP of its own. Reconstruction
+/// only restores XMP the JPEG had, so the restored file stays byte-exact.
+pub fn encode_jpeg(
+    jpeg: &[u8],
+    settings: &EncodeSettings,
+    extra_xmp: Option<&[u8]>,
+) -> Result<Vec<u8>, EncodeError> {
     let e = Enc::new()?;
     unsafe {
         check(
@@ -137,6 +144,9 @@ pub fn encode_jpeg(jpeg: &[u8], settings: &EncodeSettings) -> Result<Vec<u8>, En
             return err("jbrd: unsupported JPEG (CMYK, arithmetic, 12-bit, or corrupt)");
         }
         check(s, "AddJPEGFrame")?;
+        if let Some(xmp) = extra_xmp {
+            add_metadata_boxes(&e, &MetaBoxes::new(None, Some(xmp.to_vec())))?;
+        }
         JxlEncoderCloseInput(e.enc);
     }
     e.collect_output()
@@ -371,6 +381,93 @@ mod tests {
         assert!(resolve_color(&f, &cmyk).0.icc.is_none());
         let rgb = ColorDesc::new(None, Some(icc(b"RGB ")));
         assert!(resolve_color(&f, &rgb).0.icc.is_some());
+    }
+
+    /// 16x16 baseline RGB JPEG, optionally with an APP1 segment.
+    pub(crate) fn test_jpeg(app1: Option<Vec<u8>>) -> Vec<u8> {
+        const SIDE: u16 = 16;
+        let pixels: Vec<u8> = (0..usize::from(SIDE) * usize::from(SIDE) * 3)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect();
+        let mut out = Vec::new();
+        let mut enc = jpeg_encoder::Encoder::new(&mut out, 90);
+        if let Some(body) = app1 {
+            enc.add_app_segment(1, body).unwrap();
+        }
+        enc.encode(&pixels, SIDE, SIDE, jpeg_encoder::ColorType::Rgb).unwrap();
+        out
+    }
+
+    /// JPEG restored from a jbrd JXL, as `djxl` would produce it.
+    fn reconstruct(jxl: &[u8]) -> Vec<u8> {
+        use jpegxl_sys::decode::*;
+        const CHUNK: usize = 1 << 16;
+        unsafe {
+            let dec = JxlDecoderCreate(std::ptr::null());
+            let events = JxlDecoderStatus::JPEGReconstruction as i32 | JxlDecoderStatus::FullImage as i32;
+            assert_eq!(JxlDecoderSubscribeEvents(dec, events), JxlDecoderStatus::Success);
+            assert_eq!(JxlDecoderSetInput(dec, jxl.as_ptr(), jxl.len()), JxlDecoderStatus::Success);
+            JxlDecoderCloseInput(dec);
+            let mut out = vec![0u8; CHUNK];
+            let mut used;
+            loop {
+                match JxlDecoderProcessInput(dec) {
+                    JxlDecoderStatus::JPEGReconstruction => {
+                        JxlDecoderSetJPEGBuffer(dec, out.as_mut_ptr(), out.len());
+                    }
+                    JxlDecoderStatus::JPEGNeedMoreOutput => {
+                        used = out.len() - JxlDecoderReleaseJPEGBuffer(dec);
+                        out.resize(out.len() + CHUNK, 0);
+                        JxlDecoderSetJPEGBuffer(dec, out[used..].as_mut_ptr(), out.len() - used);
+                    }
+                    JxlDecoderStatus::FullImage => {}
+                    JxlDecoderStatus::Success => {
+                        used = out.len() - JxlDecoderReleaseJPEGBuffer(dec);
+                        break;
+                    }
+                    s => panic!("JPEG reconstruction failed: {s:?}"),
+                }
+            }
+            JxlDecoderDestroy(dec);
+            out.truncate(used);
+            out
+        }
+    }
+
+    fn settings() -> EncodeSettings {
+        EncodeSettings {
+            effort: Effort::try_from(1).unwrap(),
+            distance: Distance::try_from(0.0).unwrap(),
+            noise: None,
+        }
+    }
+
+    #[test]
+    fn extra_xmp_box_keeps_jpeg_reconstruction_byte_exact() {
+        let jpeg = test_jpeg(None);
+        let xmp = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>";
+        let jxl = encode_jpeg(&jpeg, &settings(), Some(xmp)).unwrap();
+        assert!(jxl.windows(xmp.len()).any(|w| w == xmp), "xml box present");
+        assert_eq!(reconstruct(&jxl), jpeg);
+    }
+
+    #[test]
+    fn same_length_xmp_edit_reconstructs_edited_jpeg() {
+        use crate::domain::Rating;
+        use crate::format::{jpeg_markers::scan_segments, xmp_rating};
+        let packet = format!(
+            r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about=""/></rdf:RDF></x:xmpmeta>{}<?xpacket end="w"?>"#,
+            " ".repeat(2048)
+        );
+        let mut body = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+        body.extend_from_slice(packet.as_bytes());
+        let mut jpeg = test_jpeg(Some(body));
+        let range = scan_segments(&jpeg).xmp_packet.unwrap();
+        let rating = Rating { score: 0.5, model: "m", stars: Some(3), overwrite_stars: false };
+        let edited = xmp_rating::apply_same_length(&jpeg[range.clone()], &rating).unwrap();
+        jpeg[range].copy_from_slice(&edited);
+        let jxl = encode_jpeg(&jpeg, &settings(), None).unwrap();
+        assert_eq!(reconstruct(&jxl), jpeg);
     }
 
     #[test]

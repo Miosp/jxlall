@@ -16,6 +16,9 @@ const NOT_SOF: [u8; 3] = [0xC4, 0xC8, 0xCC];
 /// bounds the upfront w*h output allocation in both JPEG decoders.
 pub const MAX_PIXELS: u64 = 1 << 28;
 
+/// APP1 signature of the main XMP packet.
+const XMP_SIG: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+
 /// First frame-defining segment before any scan: a SOFn or DHP marker and
 /// its payload (after the length field).
 fn first_frame(data: &[u8]) -> Option<(u8, &[u8])> {
@@ -71,6 +74,8 @@ pub fn lossless_sof_params(data: &[u8]) -> Option<(u8, u8)> {
 pub struct SegmentMeta {
     pub exif: Option<Vec<u8>>,
     pub xmp: Option<Vec<u8>>,
+    /// Byte range of the main XMP packet (APP1 payload) in the file.
+    pub xmp_packet: Option<std::ops::Range<usize>>,
     pub icc: Option<Vec<u8>>,
 }
 
@@ -107,10 +112,11 @@ pub fn scan_segments(data: &[u8]) -> SegmentMeta {
         if marker == 0xE1 && body.starts_with(b"Exif\0\0") && meta.exif.is_none() {
             meta.exif = Some(body[6..].to_vec());
         } else if marker == 0xE1
-            && body.starts_with(b"http://ns.adobe.com/xap/1.0/\0")
+            && body.starts_with(XMP_SIG)
             && meta.xmp.is_none()
         {
-            meta.xmp = Some(body[29..].to_vec());
+            meta.xmp = Some(body[XMP_SIG.len()..].to_vec());
+            meta.xmp_packet = Some(i + 4 + XMP_SIG.len()..i + 2 + seg_len);
         } else if marker == 0xE1
             && let Some(chunk) = xmp_extended::parse_chunk(body)
         {
@@ -197,6 +203,8 @@ mod tests {
         let xmp = String::from_utf8(scan_segments(&v).xmp.unwrap()).unwrap();
         assert!(xmp.contains(r#"GDepth:Data="AAAA""#));
         assert!(!xmp.contains("HasExtendedXMP"));
+        let range = scan_segments(&v).xmp_packet.unwrap();
+        assert_eq!(&v[range], main_packet().as_bytes());
     }
 
     #[test]

@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::domain::StarThresholds;
 use crate::encode::{Distance, Effort, EncodeSettings, NoiseStrength};
+use crate::iqa::{IqaModel, IqaOptions};
 
 #[derive(Parser, Debug)]
 #[command(name = "photo-convert", version, about = "Convert photos to JPEG XL")]
@@ -65,6 +67,20 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_NOISE_STRENGTH)]
     noise_strength: f32,
 
+    /// Rate image quality with this no-reference model and store the raw
+    /// score in XMP. The model is downloaded once to the user cache.
+    #[arg(long, value_enum)]
+    iqa: Option<IqaModel>,
+
+    /// Also write `xmp:Rating` stars: minimum scores for 2, 3, 4 and 5
+    /// stars, comma-separated (lower scores get 1 star).
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    iqa_stars: Option<Vec<f32>>,
+
+    /// Replace a star rating the source already has.
+    #[arg(long)]
+    overwrite_rating: bool,
+
     /// Verbose per-file logging.
     #[arg(short, long)]
     verbose: bool,
@@ -96,6 +112,7 @@ pub struct RunOptions {
     pub recursive: bool,
     pub pattern: String,
     pub delete_originals: bool,
+    pub iqa: Option<IqaOptions>,
     pub verbose: bool,
 }
 
@@ -118,6 +135,12 @@ pub fn parse() -> Result<RunOptions, String> {
             "note: JPEGs recompressed losslessly get no grain; add --force-lossy-jpeg for them"
         );
     }
+    let stars = args.iqa_stars.map(StarThresholds::try_from).transpose()?;
+    if args.iqa.is_none() && (stars.is_some() || args.overwrite_rating) {
+        eprintln!("warning: --iqa-stars and --overwrite-rating have no effect without --iqa");
+    } else if stars.is_none() && args.overwrite_rating {
+        eprintln!("warning: --overwrite-rating has no effect without --iqa-stars");
+    }
     if args.jobs.is_some_and(|j| j > MAX_JOBS) {
         eprintln!("note: --jobs capped at {MAX_JOBS}");
     }
@@ -136,6 +159,11 @@ pub fn parse() -> Result<RunOptions, String> {
         recursive: args.recursive,
         pattern: args.pattern,
         delete_originals: args.delete_originals,
+        iqa: args.iqa.map(|model| IqaOptions {
+            model,
+            stars,
+            overwrite_stars: args.overwrite_rating,
+        }),
         verbose: args.verbose,
     })
 }

@@ -6,6 +6,7 @@ mod domain;
 mod encode;
 mod format;
 mod inputs;
+mod iqa;
 mod pipeline;
 mod sniff;
 mod stats;
@@ -41,9 +42,17 @@ fn main() -> ExitCode {
         };
     }
 
+    let rater = match opts.iqa.map(iqa::Rater::load).transpose() {
+        Ok(rater) => rater.map(Arc::new),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let total = files.len() as u64;
     let stats = Arc::new(Stats::default());
-    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats)) {
+    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats), rater) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }
