@@ -1,13 +1,13 @@
 //! JXL container boxes: metadata transfer and the `jhgm` gain map bundle.
 
-use super::encoder::{check, err, Enc, EncodeError};
 use super::EncodeSettings;
+use super::encoder::{Enc, EncodeError, check, err};
 use crate::domain::MetaBoxes;
-use std::ffi::c_char;
 use jpegxl_sys::color::color_encoding::JxlColorEncoding;
 use jpegxl_sys::common::types::{JxlBoxType, JxlDataType, JxlEndianness, JxlPixelFormat};
 use jpegxl_sys::encoder::encode::*;
 use jpegxl_sys::metadata::codestream_header::JxlBasicInfo;
+use std::ffi::c_char;
 use std::ptr::null_mut;
 
 fn box_type(name: &[u8; 4]) -> JxlBoxType {
@@ -93,7 +93,11 @@ pub fn encode_gain_map_gray(
             return err("FrameSettingsCreate failed");
         }
         check(
-            JxlEncoderFrameSettingsSetOption(fs, JxlEncoderFrameSettingId::Effort, settings.effort.value()),
+            JxlEncoderFrameSettingsSetOption(
+                fs,
+                JxlEncoderFrameSettingId::Effort,
+                settings.effort.value(),
+            ),
             "set effort (gain map)",
         )?;
         check(
@@ -122,10 +126,7 @@ pub fn encode_gain_map_gray(
 /// live in `jxl_extras`, which the vendored build does not produce:
 /// `version u8 | metadata_size BE16 | metadata | color_encoding_size u8 (0)
 ///  | alt_icc_size BE32 (0) | gain map codestream`.
-pub fn build_jhgm_box(
-    metadata_iso: &[u8],
-    gain_codestream: &[u8],
-) -> Result<Vec<u8>, EncodeError> {
+pub fn build_jhgm_box(metadata_iso: &[u8], gain_codestream: &[u8]) -> Result<Vec<u8>, EncodeError> {
     if metadata_iso.len() > u16::MAX as usize {
         return err("gain map ISO metadata exceeds 64 KiB");
     }

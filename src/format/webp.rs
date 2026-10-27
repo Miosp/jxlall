@@ -1,8 +1,7 @@
 //! WebP decode via `zenwebp`: 8-bit RGB(A) + ICC/EXIF/XMP metadata.
 
 use crate::domain::{
-    strip_exif_prefix, ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation,
-    Pixels,
+    ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation, Pixels, strip_exif_prefix,
 };
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
@@ -27,7 +26,6 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         .map(|o| Orientation::new(o as u8))
         .or_else(|| Orientation::from_exif(exif.as_deref()))
         .unwrap_or_default();
-
 
     let frame = ImageFrame {
         width: w,

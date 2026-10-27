@@ -8,9 +8,9 @@ pub use boxes::{build_jhgm_box, encode_gain_map_gray};
 pub use encoder::{Enc, EncodeError};
 
 use self::encoder::{check, err};
-use boxes::add_metadata_boxes;
-use color::{set_color, ColorChoice};
 use crate::domain::{ColorDesc, IccSpace, ImageFrame, MetaBoxes, Orientation, Pixels};
+use boxes::add_metadata_boxes;
+use color::{ColorChoice, set_color};
 use jpegxl_sys::common::types::{JxlDataType, JxlEndianness, JxlPixelFormat};
 use jpegxl_sys::encoder::encode::*;
 use jpegxl_sys::metadata::codestream_header::{JxlBasicInfo, JxlOrientation};
@@ -24,7 +24,10 @@ impl TryFrom<i64> for Effort {
     type Error = String;
 
     fn try_from(v: i64) -> Result<Self, Self::Error> {
-        (1..=10).contains(&v).then_some(Self(v)).ok_or_else(|| "effort must be 1..=10".into())
+        (1..=10)
+            .contains(&v)
+            .then_some(Self(v))
+            .ok_or_else(|| "effort must be 1..=10".into())
     }
 }
 
@@ -52,7 +55,10 @@ impl TryFrom<f32> for Distance {
     type Error = String;
 
     fn try_from(v: f32) -> Result<Self, Self::Error> {
-        (0.0..=25.0).contains(&v).then_some(Self(v)).ok_or_else(|| "distance must be 0..=25".into())
+        (0.0..=25.0)
+            .contains(&v)
+            .then_some(Self(v))
+            .ok_or_else(|| "distance must be 0..=25".into())
     }
 }
 
@@ -93,7 +99,11 @@ unsafe fn set_photon_noise(
     match iso {
         Some(iso) => unsafe {
             check(
-                JxlEncoderFrameSettingsSetFloatOption(fs, JxlEncoderFrameSettingId::PhotonNoise, iso),
+                JxlEncoderFrameSettingsSetFloatOption(
+                    fs,
+                    JxlEncoderFrameSettingId::PhotonNoise,
+                    iso,
+                ),
                 "set photon noise",
             )
         },
@@ -190,11 +200,18 @@ pub fn encode_image(
             return err("FrameSettingsCreate failed");
         }
         check(
-            JxlEncoderFrameSettingsSetOption(fs, JxlEncoderFrameSettingId::Effort, settings.effort.value()),
+            JxlEncoderFrameSettingsSetOption(
+                fs,
+                JxlEncoderFrameSettingId::Effort,
+                settings.effort.value(),
+            ),
             "set effort",
         )?;
         if settings.distance.is_lossless() {
-            check(JxlEncoderSetFrameLossless(fs, true.into()), "SetFrameLossless")?;
+            check(
+                JxlEncoderSetFrameLossless(fs, true.into()),
+                "SetFrameLossless",
+            )?;
         } else {
             // Grain is calibrated for XYB only: lossless frames (original
             // color space) get it colored, jbrd frames (YCbCr) only above
@@ -241,7 +258,10 @@ fn apply_bit_depth(bi: &mut JxlBasicInfo, frame: &ImageFrame) {
 /// RGB; a gray ICC profile can only be honored by encoding gray, and a
 /// profile of any other space (CMYK after conversion, Lab, ...) does not
 /// describe the RGB samples, so it is dropped.
-fn resolve_color<'a>(frame: &ImageFrame, color: &'a ColorDesc) -> (ColorChoice<'a>, Option<Pixels>) {
+fn resolve_color<'a>(
+    frame: &ImageFrame,
+    color: &'a ColorDesc,
+) -> (ColorChoice<'a>, Option<Pixels>) {
     let mut choice = ColorChoice {
         cicp: color.cicp.as_ref(),
         icc: None,
@@ -304,7 +324,6 @@ fn pixel_format(pixels: &Pixels, has_alpha: bool, gray: bool) -> JxlPixelFormat 
         align: 0,
     }
 }
-
 
 impl Orientation {
     /// EXIF orientation values map 1:1 onto `JxlOrientation` (1..=8).

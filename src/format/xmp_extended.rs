@@ -126,7 +126,11 @@ fn with_inherited_namespaces(src: &str, node: Node) -> String {
         if ns.name() == Some("xml") || declared.contains(&ns.name()) {
             continue;
         }
-        let uri = ns.uri().replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
+        let uri = ns
+            .uri()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('"', "&quot;");
         match ns.name() {
             Some(p) => decls.push_str(&format!(" xmlns:{p}=\"{uri}\"")),
             None => decls.push_str(&format!(" xmlns=\"{uri}\"")),
@@ -208,7 +212,10 @@ pub(crate) mod tests {
             .flat_map(|n| n.attributes())
             .find(|a| a.name() == "Data")
             .expect("extension property present");
-        assert_eq!(depth.namespace(), Some("http://ns.google.com/photos/1.0/depthmap/"));
+        assert_eq!(
+            depth.namespace(),
+            Some("http://ns.google.com/photos/1.0/depthmap/")
+        );
         assert_eq!(depth.value(), "AAAA");
         assert!(extension_pointer(&doc).is_none());
         assert!(merged.contains(r#"dc:format="image/jpeg""#));
@@ -243,7 +250,9 @@ pub(crate) mod tests {
 
     #[test]
     fn unreferenced_extension_is_ignored() {
-        let main = format!(r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="{RDF_NS}"/></x:xmpmeta>"#);
+        let main = format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="{RDF_NS}"/></x:xmpmeta>"#
+        );
         let bodies = chunk_bodies(extended_packet().as_bytes());
         let chunks: Vec<Chunk> = bodies.iter().map(|b| parse_chunk(b).unwrap()).collect();
         assert_eq!(merge(main.as_bytes(), &chunks).unwrap(), main.as_bytes());

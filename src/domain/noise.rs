@@ -50,7 +50,10 @@ pub fn iso_from_exif(exif: &[u8]) -> Option<IsoEstimate> {
         .zip(uint(exif::Tag::FocalLengthIn35mmFilm))
         .map(|(f, f35)| f64::from(f35) / f)
         .filter(|c| CROP_RANGE.contains(c));
-    Some(IsoEstimate { iso: f64::from(iso), crop })
+    Some(IsoEstimate {
+        iso: f64::from(iso),
+        crop,
+    })
 }
 
 #[cfg(test)]
@@ -116,7 +119,13 @@ mod tests {
             None,
         ))
         .unwrap();
-        assert_eq!(e, IsoEstimate { iso: 102_400.0, crop: None });
+        assert_eq!(
+            e,
+            IsoEstimate {
+                iso: 102_400.0,
+                crop: None
+            }
+        );
     }
 
     #[test]

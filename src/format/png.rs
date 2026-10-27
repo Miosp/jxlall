@@ -1,10 +1,10 @@
 //! PNG decode: cICP/iCCP/eXIf metadata + 8/16-bit pixels.
 
-use crate::domain::{
-    strip_exif_prefix, Cicp, ColorDesc, CustomColor, Decoded, DecodedImage, Hdr, ImageFrame,
-    MetaBoxes, Orientation, Pixels,
-};
 use super::png_text::scan_text_chunks;
+use crate::domain::{
+    Cicp, ColorDesc, CustomColor, Decoded, DecodedImage, Hdr, ImageFrame, MetaBoxes, Orientation,
+    Pixels, strip_exif_prefix,
+};
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
@@ -20,7 +20,6 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     }
     // IHDR dimensions are attacker-controlled: bound the decode buffer.
     const MAX_BUFFER_BYTES: u64 = 1 << 32;
-
 
     let (color_type, bit_depth) = reader.output_color_type();
     let width = info.width;
@@ -51,7 +50,6 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     reader
         .next_frame(&mut buf)
         .map_err(|e| format!("PNG decode: {e}"))?;
-
 
     let (pixels, has_alpha) = match bit_depth {
         png::BitDepth::Eight => {
@@ -137,7 +135,10 @@ fn gama_chrm(info: &png::Info) -> Option<CustomColor> {
             }
             ok
         });
-    let custom = CustomColor { gamma, chromaticities };
+    let custom = CustomColor {
+        gamma,
+        chromaticities,
+    };
     (custom.gamma.is_some() || custom.chromaticities.is_some()).then_some(custom)
 }
 
@@ -181,7 +182,11 @@ fn expand_to_rgb8(buf: Vec<u8>, ct: png::ColorType) -> (Vec<u8>, bool) {
 /// PNG 16-bit samples are big-endian; the encoder wants native u16.
 /// Converted while expanding, so no second full-size buffer is alive.
 fn expand_to_rgb16(buf: &[u8], ct: png::ColorType) -> (Vec<u16>, bool) {
-    let samples = buf.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c));
+    let samples = buf
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_be_bytes(*c));
     match ct {
         png::ColorType::Grayscale => (samples.flat_map(|g| [g, g, g]).collect(), false),
         png::ColorType::GrayscaleAlpha => {
@@ -211,7 +216,8 @@ mod tests {
 
     #[test]
     fn sixteen_bit_gray_alpha_expands_big_endian() {
-        let (px, alpha) = expand_to_rgb16(&[0x12, 0x34, 0xAB, 0xCD], png::ColorType::GrayscaleAlpha);
+        let (px, alpha) =
+            expand_to_rgb16(&[0x12, 0x34, 0xAB, 0xCD], png::ColorType::GrayscaleAlpha);
         assert!(alpha);
         assert_eq!(px, [0x1234, 0x1234, 0x1234, 0xABCD]);
         let (px, _) = expand_to_rgb16(&[0x00, 0x01], png::ColorType::Grayscale);

@@ -1,9 +1,7 @@
 //! TIFF decode: multipage → one Decoded per page; ICC tag; 8/16-bit;
 //! float → F32; CMYK/YCbCr → RGB; planar → interleaved.
 
-use crate::domain::{
-    ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation, Pixels,
-};
+use crate::domain::{ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation, Pixels};
 use tiff::tags::Tag;
 
 /// Per-page pixel budget (268M px ≈ 8k×33k; RGBA16 ≈ 2 GiB).
@@ -38,7 +36,10 @@ struct YCbCr {
 }
 
 impl YCbCr {
-    const JFIF: Self = Self { luma: BT601_LUMA, ref_bw: FULL_RANGE_REF_BW };
+    const JFIF: Self = Self {
+        luma: BT601_LUMA,
+        ref_bw: FULL_RANGE_REF_BW,
+    };
 }
 
 pub fn decode(data: &std::sync::Arc<Vec<u8>>) -> Result<Vec<Decoded>, String> {
@@ -54,7 +55,9 @@ pub fn decode(data: &std::sync::Arc<Vec<u8>>) -> Result<Vec<Decoded>, String> {
 
     loop {
         let (w, h) = dec.dimensions().map_err(|e| format!("TIFF dims: {e}"))?;
-        let ct = dec.colortype().map_err(|e| format!("TIFF colortype: {e}"))?;
+        let ct = dec
+            .colortype()
+            .map_err(|e| format!("TIFF colortype: {e}"))?;
         let pixels = u64::from(w) * u64::from(h);
         if pixels > MAX_PAGE_PIXELS {
             return Err(format!("TIFF page too large ({w}x{h})"));
@@ -77,7 +80,10 @@ pub fn decode(data: &std::sync::Arc<Vec<u8>>) -> Result<Vec<Decoded>, String> {
         // The crate reports gray+alpha as two-sample Multiband.
         let ct = match (ct, extra.first()) {
             (
-                tiff::ColorType::Multiband { bit_depth, num_samples: 2 },
+                tiff::ColorType::Multiband {
+                    bit_depth,
+                    num_samples: 2,
+                },
                 Some(&(ASSOCIATED_ALPHA | UNASSOCIATED_ALPHA)),
             ) => tiff::ColorType::GrayA(bit_depth),
             (ct, _) => ct,
@@ -115,11 +121,10 @@ pub fn decode(data: &std::sync::Arc<Vec<u8>>) -> Result<Vec<Decoded>, String> {
         }
 
         let exif = dec.ifd_pointer().and_then(|ifd| {
-            super::tiff_exif::minimal_exif(data, ifd.0)
-                .unwrap_or_else(|e| {
-                    eprintln!("note: malformed TIFF metadata dropped ({e})");
-                    None
-                })
+            super::tiff_exif::minimal_exif(data, ifd.0).unwrap_or_else(|e| {
+                eprintln!("note: malformed TIFF metadata dropped ({e})");
+                None
+            })
         });
         let meta = MetaBoxes::new(exif, find_bytes(&mut dec, Tag::Unknown(TAG_XMP), "XMP"));
         pages.push(Decoded::Image(Box::new(
@@ -182,9 +187,7 @@ fn frame_from(
     Ok(match (ct, img) {
         (ColorType::RGB(_), DecodingResult::U8(v)) => frame(8, false, Pixels::U8(v)),
         (ColorType::RGBA(_), DecodingResult::U8(v)) => frame(8, true, Pixels::U8(v)),
-        (ColorType::Gray(_), DecodingResult::U8(v)) => {
-            frame(8, false, Pixels::U8(replicate(&v)))
-        }
+        (ColorType::Gray(_), DecodingResult::U8(v)) => frame(8, false, Pixels::U8(replicate(&v))),
         (ColorType::GrayA(_), DecodingResult::U8(v)) => frame(8, true, Pixels::U8(interleave(&v))),
         (ColorType::RGB(_), DecodingResult::U16(v)) => frame(16, false, Pixels::U16(v)),
         (ColorType::RGBA(_), DecodingResult::U16(v)) => frame(16, true, Pixels::U16(v)),
@@ -215,13 +218,13 @@ fn frame_from(
             frame(32, true, Pixels::F32(interleave(&v)))
         }
         (ColorType::CMYK(_), DecodingResult::F32(_)) => {
-            return Err("float CMYK TIFF not supported".into())
+            return Err("float CMYK TIFF not supported".into());
         }
         (ct, r) => {
             return Err(format!(
                 "unsupported TIFF combination {ct:?} / {} samples",
                 sample_kind(&r)
-            ))
+            ));
         }
     })
 }
@@ -239,13 +242,7 @@ fn samples_per_pixel(ct: tiff::ColorType) -> usize {
 
 /// Expand bit-packed sub-8-bit TIFF samples to full-range u8
 /// (v -> v*255/(2^bits-1)); rows may be byte-padded to `stride`.
-fn unpack_bits(
-    buf: &[u8],
-    w: u32,
-    h: u32,
-    samples: usize,
-    bits: u8,
-) -> Result<Vec<u8>, String> {
+fn unpack_bits(buf: &[u8], w: u32, h: u32, samples: usize, bits: u8) -> Result<Vec<u8>, String> {
     let (w, h, bits) = (w as usize, h as usize, bits as usize);
     let packed_row = (w * samples * bits).div_ceil(8);
     let stride = buf
@@ -304,11 +301,14 @@ fn interleave_planes<T: Copy>(v: &[T], planes: usize) -> Result<Vec<T>, String> 
 
 /// YCbCr conversion parameters. JPEG-compressed data follows JFIF (BT.601,
 /// full range) regardless of the tags, as libtiff's JPEGCOLORMODE_RGB does.
-fn ycbcr_params<R: std::io::Read + std::io::Seek>(
-    dec: &mut tiff::decoder::Decoder<R>,
-) -> YCbCr {
+fn ycbcr_params<R: std::io::Read + std::io::Seek>(dec: &mut tiff::decoder::Decoder<R>) -> YCbCr {
     let default = YCbCr::JFIF;
-    if dec.find_tag_unsigned::<u16>(Tag::Compression).ok().flatten() == Some(COMPRESSION_JPEG) {
+    if dec
+        .find_tag_unsigned::<u16>(Tag::Compression)
+        .ok()
+        .flatten()
+        == Some(COMPRESSION_JPEG)
+    {
         return default;
     }
     let mut rationals = |tag| -> Option<Vec<f64>> {
@@ -361,7 +361,10 @@ fn find_bytes<R: std::io::Read + std::io::Seek>(
     tag: Tag,
     what: &str,
 ) -> Option<Vec<u8>> {
-    match dec.find_tag(tag).and_then(|v| v.map(|v| v.into_u8_vec()).transpose()) {
+    match dec
+        .find_tag(tag)
+        .and_then(|v| v.map(|v| v.into_u8_vec()).transpose())
+    {
         Ok(v) => v,
         Err(e) => {
             eprintln!("note: unreadable TIFF {what} tag dropped ({e})");
@@ -443,7 +446,11 @@ mod tests {
                 V::Ascii(a) => (2, a.len() + 1, [a.as_bytes(), &[0]].concat()),
                 V::Bytes(b) => (1, b.len(), b.to_vec()),
                 // Flattened numerator/denominator pairs.
-                V::Rational(r) => (5, r.len() / 2, r.iter().flat_map(|x| x.to_le_bytes()).collect()),
+                V::Rational(r) => (
+                    5,
+                    r.len() / 2,
+                    r.iter().flat_map(|x| x.to_le_bytes()).collect(),
+                ),
                 V::Ifd(sub) => (4, 1, write_ifd(out, sub).to_le_bytes().to_vec()),
             };
             let value = if bytes.len() <= 4 {
@@ -490,7 +497,10 @@ mod tests {
                 }
             }
             tags.push((273, V::Long(offsets)));
-            tags.push((279, V::Long(strips.iter().map(|s| s.len() as u32).collect())));
+            tags.push((
+                279,
+                V::Long(strips.iter().map(|s| s.len() as u32).collect()),
+            ));
             let ifd = write_ifd(&mut out, tags);
             out[next_ptr..next_ptr + 4].copy_from_slice(&ifd.to_le_bytes());
             next_ptr = out.len() - 4;
@@ -578,8 +588,11 @@ mod tests {
         let mut tags = image_tags(2, 1, vec![8, 8, 8], YCBCR, CHUNKY);
         tags.push((530, V::Short(vec![1, 1])));
         // White, and BT.601 full-range red.
-        let img = decode_pages(build_tiff(vec![(tags, vec![vec![255, 128, 128, 76, 85, 255]])]))
-            .remove(0);
+        let img = decode_pages(build_tiff(vec![(
+            tags,
+            vec![vec![255, 128, 128, 76, 85, 255]],
+        )]))
+        .remove(0);
         let expected = [255, 255, 255, 254, 0, 0];
         for (got, want) in u8_pixels(&img).iter().zip(expected) {
             assert!(got.abs_diff(want) <= 1, "{:?}", u8_pixels(&img));
@@ -591,7 +604,10 @@ mod tests {
         let mut tags = image_tags(1, 1, vec![8, 8, 8], YCBCR, CHUNKY);
         tags.push((530, V::Short(vec![1, 1])));
         // Studio range: Y 16..235, chroma 128 ± 112.
-        tags.push((532, V::Rational(vec![16, 1, 235, 1, 128, 1, 240, 1, 128, 1, 240, 1])));
+        tags.push((
+            532,
+            V::Rational(vec![16, 1, 235, 1, 128, 1, 240, 1, 128, 1, 240, 1]),
+        ));
         let img = decode_pages(build_tiff(vec![(tags, vec![vec![235, 128, 128]])])).remove(0);
         assert_eq!(u8_pixels(&img), [255, 255, 255]);
     }
@@ -600,8 +616,11 @@ mod tests {
     fn planar_one_bit_gray_alpha() {
         let mut tags = image_tags(8, 1, vec![1, 1], BLACK_IS_ZERO, PLANAR);
         tags.push((338, V::Short(vec![UNASSOCIATED_ALPHA])));
-        let img = decode_pages(build_tiff(vec![(tags, vec![vec![0b1010_0000], vec![0b1100_0000]])]))
-            .remove(0);
+        let img = decode_pages(build_tiff(vec![(
+            tags,
+            vec![vec![0b1010_0000], vec![0b1100_0000]],
+        )]))
+        .remove(0);
         let px = u8_pixels(&img);
         let gray: Vec<u8> = px.iter().step_by(4).copied().collect();
         let alpha: Vec<u8> = px.iter().skip(3).step_by(4).copied().collect();
@@ -625,10 +644,13 @@ mod tests {
             (271, V::Ascii(make)),
             (272, V::Ascii("Model Name")),
             (274, V::Short(vec![6])),
-            (34665, V::Ifd(vec![
-                (36867, V::Ascii("2024:01:02 03:04:05")),
-                (40965, V::Ifd(vec![(1, V::Ascii("R98"))])),
-            ])),
+            (
+                34665,
+                V::Ifd(vec![
+                    (36867, V::Ascii("2024:01:02 03:04:05")),
+                    (40965, V::Ifd(vec![(1, V::Ascii("R98"))])),
+                ]),
+            ),
             (34853, V::Ifd(vec![(1, V::Ascii("N"))])),
         ]);
         (tags, vec![vec![pixel; 64 * 64]])
@@ -647,14 +669,27 @@ mod tests {
         for (img, make) in pages.iter().zip(["\"One\"", "\"Two\""]) {
             let payload = img.meta.exif.as_deref().expect("exif kept").clone();
             assert!(payload.len() < 64 * 64, "payload {} bytes", payload.len());
-            assert_eq!(Orientation::from_exif(Some(&payload)), Some(Orientation::new(6)));
+            assert_eq!(
+                Orientation::from_exif(Some(&payload)),
+                Some(Orientation::new(6))
+            );
             let exif = exif::Reader::new().read_raw(payload).unwrap();
             assert_eq!(field(&exif, exif::Tag::Make), make);
             assert_eq!(field(&exif, exif::Tag::Model), "\"Model Name\"");
-            assert_eq!(field(&exif, exif::Tag::DateTimeOriginal), "2024-01-02 03:04:05");
+            assert_eq!(
+                field(&exif, exif::Tag::DateTimeOriginal),
+                "2024-01-02 03:04:05"
+            );
             assert_eq!(field(&exif, exif::Tag::GPSLatitudeRef), "N");
-            assert!(exif.get_field(exif::Tag::InteroperabilityIndex, exif::In::PRIMARY).is_some());
-            for structural in [exif::Tag::StripOffsets, exif::Tag::ImageWidth, exif::Tag::BitsPerSample] {
+            assert!(
+                exif.get_field(exif::Tag::InteroperabilityIndex, exif::In::PRIMARY)
+                    .is_some()
+            );
+            for structural in [
+                exif::Tag::StripOffsets,
+                exif::Tag::ImageWidth,
+                exif::Tag::BitsPerSample,
+            ] {
                 assert!(exif.get_field(structural, exif::In::PRIMARY).is_none());
             }
             assert!(exif.fields().all(|f| f.ifd_num == exif::In::PRIMARY));
@@ -663,8 +698,18 @@ mod tests {
 
     #[test]
     fn zero_width_page_is_rejected() {
-        let zero = || (image_tags(0, 1, vec![1], BLACK_IS_ZERO, CHUNKY), vec![vec![0]]);
-        let one = || (image_tags(1, 1, vec![1], BLACK_IS_ZERO, CHUNKY), vec![vec![0]]);
+        let zero = || {
+            (
+                image_tags(0, 1, vec![1], BLACK_IS_ZERO, CHUNKY),
+                vec![vec![0]],
+            )
+        };
+        let one = || {
+            (
+                image_tags(1, 1, vec![1], BLACK_IS_ZERO, CHUNKY),
+                vec![vec![0]],
+            )
+        };
         for pages in [vec![zero()], vec![one(), zero()]] {
             let Err(e) = decode(&Arc::new(build_tiff(pages))) else {
                 panic!("zero-width page accepted");
@@ -676,8 +721,15 @@ mod tests {
     #[test]
     fn total_budget_counts_bytes() {
         // Each page is 1.5 MiB as RGB16 but only 256K pixels.
-        let page = || (image_tags(512, 512, vec![16, 16, 16], RGB, CHUNKY), vec![vec![0; 512 * 512 * 6]]);
-        let pages = (0..MAX_TOTAL_BYTES.div_ceil(512 * 512 * 6) as usize + 1).map(|_| page()).collect();
+        let page = || {
+            (
+                image_tags(512, 512, vec![16, 16, 16], RGB, CHUNKY),
+                vec![vec![0; 512 * 512 * 6]],
+            )
+        };
+        let pages = (0..MAX_TOTAL_BYTES.div_ceil(512 * 512 * 6) as usize + 1)
+            .map(|_| page())
+            .collect();
         let Err(e) = decode(&Arc::new(build_tiff(pages))) else {
             panic!("byte budget not enforced");
         };
@@ -694,7 +746,10 @@ mod tests {
         assert_eq!(img.meta.xmp.as_deref().map(Vec::as_slice), Some(XMP));
         let payload = img.meta.exif.as_deref().expect("exif kept").clone();
         let exif = exif::Reader::new().read_raw(payload).unwrap();
-        assert!(exif.get_field(exif::Tag(exif::Context::Tiff, 700), exif::In::PRIMARY).is_none());
+        assert!(
+            exif.get_field(exif::Tag(exif::Context::Tiff, 700), exif::In::PRIMARY)
+                .is_none()
+        );
     }
 
     #[test]
@@ -718,7 +773,9 @@ mod tests {
     fn bigtiff_exif_becomes_classic() {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut enc = tiff::encoder::TiffEncoder::new_big(&mut buf).unwrap();
-        let mut image = enc.new_image::<tiff::encoder::colortype::Gray8>(1, 1).unwrap();
+        let mut image = enc
+            .new_image::<tiff::encoder::colortype::Gray8>(1, 1)
+            .unwrap();
         image.encoder().write_tag(Tag::Make, "Big Camera").unwrap();
         image.encoder().write_tag(Tag::Orientation, 3u16).unwrap();
         // 8 bytes: inline in BigTIFF, out of line in classic TIFF.

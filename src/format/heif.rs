@@ -1,8 +1,8 @@
 //! HEIF/HEIC/AVIF decode via `heic` (std + av1 features).
 
 use crate::domain::{
-    reset_exif_orientation, strip_exif_prefix, Cicp, ColorDesc, Decoded, DecodedImage, GainMapData, Hdr, ImageFrame, MetaBoxes, Orientation,
-    Pixels,
+    Cicp, ColorDesc, Decoded, DecodedImage, GainMapData, Hdr, ImageFrame, MetaBoxes, Orientation,
+    Pixels, reset_exif_orientation, strip_exif_prefix,
 };
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
@@ -102,7 +102,6 @@ fn decode_gain_map(
         }
     }
 }
-
 
 /// heic rotates the base by the primary item's irot/imir but decodes the
 /// gain map with only its own transforms. Aligned only when known: no source

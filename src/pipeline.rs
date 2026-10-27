@@ -317,7 +317,9 @@ fn encode_decoded_image(
     let iso = settings
         .noise
         .filter(|_| !settings.distance.is_lossless())
-        .and_then(|strength| photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), strength, path));
+        .and_then(|strength| {
+            photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), strength, path)
+        });
     crate::encode::encode_image(&frame, &color, &meta, orientation, &hdr, settings, iso)
         .map_err(|e| e.to_string())
 }
@@ -326,7 +328,10 @@ fn encode_decoded_image(
 /// scaled by the user's strength. `None` (with a note) without an ISO.
 fn photon_noise_iso(exif: Option<&[u8]>, strength: NoiseStrength, path: &Path) -> Option<f32> {
     let Some(estimate) = exif.and_then(crate::domain::iso_from_exif) else {
-        eprintln!("note: {}: no ISO in metadata, no grain added", path.display());
+        eprintln!(
+            "note: {}: no ISO in metadata, no grain added",
+            path.display()
+        );
         return None;
     };
     if estimate.crop.is_none() {
@@ -645,10 +650,8 @@ mod tests {
 
     /// Fresh scratch directory per test.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jxlall-pipeline-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jxlall-pipeline-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -1,8 +1,8 @@
 //! JPEG pixel decode via zune-jpeg: the forced-lossy path and inputs jbrd
 //! cannot represent (CMYK, arithmetic).
 
+use super::jpeg_markers::{MAX_PIXELS, scan_segments};
 use crate::domain::{ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation, Pixels};
-use super::jpeg_markers::{scan_segments, MAX_PIXELS};
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     let mut dec = zune_jpeg::JpegDecoder::new(zune_jpeg::zune_core::bytestream::ZCursor::new(data));
@@ -34,7 +34,11 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         pixels: Pixels::U8(pixels),
     };
     Ok(Decoded::Image(Box::new(
-        DecodedImage::new(frame, ColorDesc::new(None, seg.icc), MetaBoxes::new(exif, seg.xmp))
-            .orientation(orientation),
+        DecodedImage::new(
+            frame,
+            ColorDesc::new(None, seg.icc),
+            MetaBoxes::new(exif, seg.xmp),
+        )
+        .orientation(orientation),
     )))
 }

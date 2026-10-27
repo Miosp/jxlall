@@ -1,6 +1,6 @@
 //! Color encoding selection: CICP enums → ICC bytes → gAMA/cHRM → default.
 
-use super::encoder::{check, Enc, EncodeError};
+use super::encoder::{Enc, EncodeError, check};
 use crate::domain::{Cicp, CustomColor};
 use jpegxl_sys::color::color_encoding::*;
 use jpegxl_sys::encoder::encode::*;
@@ -146,7 +146,10 @@ mod tests {
     use super::*;
 
     fn cicp(p: u16, t: u16) -> Cicp {
-        Cicp { color_primaries: p, transfer_characteristics: t }
+        Cicp {
+            color_primaries: p,
+            transfer_characteristics: t,
+        }
     }
 
     #[test]

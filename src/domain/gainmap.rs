@@ -9,7 +9,7 @@
 //! Target: `jhgm` = JxlGainMapBundle{ metadata (ISO 21496-1, `JpegApp2`
 //! layout = no version prefix), gain map as naked JXL codestream }.
 
-use crate::encode::{build_jhgm_box, encode_gain_map_gray, EncodeError, EncodeSettings};
+use crate::encode::{EncodeError, EncodeSettings, build_jhgm_box, encode_gain_map_gray};
 use ultrahdr_core::metadata::iso21496::{parse_iso21496, serialize_iso21496};
 use ultrahdr_core::{GainMapMetadata, Iso21496Format};
 

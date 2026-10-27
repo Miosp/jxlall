@@ -126,14 +126,10 @@ pub fn scan_segments(data: &[u8]) -> SegmentMeta {
     }
     // Only trust a complete ICC chunk set: sequence numbers must cover
     // 1..=total exactly — no missing parts, no duplicates.
-    if !icc_parts.is_empty()
-        && icc_total > 0
-        && icc_parts.len() == icc_total as usize
-        && {
-            icc_parts.sort_by_key(|(seq, _)| *seq);
-            icc_parts.iter().map(|(seq, _)| *seq).eq(1..=icc_total)
-        }
-    {
+    if !icc_parts.is_empty() && icc_total > 0 && icc_parts.len() == icc_total as usize && {
+        icc_parts.sort_by_key(|(seq, _)| *seq);
+        icc_parts.iter().map(|(seq, _)| *seq).eq(1..=icc_total)
+    } {
         let mut icc = Vec::new();
         for (_, part) in &icc_parts {
             icc.extend_from_slice(part);
@@ -170,7 +166,9 @@ mod tests {
     #[test]
     fn hierarchical_is_detected_before_first_frame() {
         // SOI, DHP(64x64), SOF0(32x32).
-        let mut v = vec![0xFF, 0xD8, 0xFF, DHP, 0x00, 0x0B, 8, 0, 64, 0, 64, 1, 1, 0x11, 0];
+        let mut v = vec![
+            0xFF, 0xD8, 0xFF, DHP, 0x00, 0x0B, 8, 0, 64, 0, 64, 1, 1, 0x11, 0,
+        ];
         v.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x0B, 8, 0, 32, 0, 32, 1, 1, 0x11, 0]);
         assert!(is_hierarchical(&v));
         assert!(!is_lossless_sof(&v));

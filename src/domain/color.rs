@@ -45,7 +45,11 @@ impl ColorDesc {
             }
             None => None,
         };
-        Self { cicp, icc, custom: None }
+        Self {
+            cicp,
+            icc,
+            custom: None,
+        }
     }
 
     pub fn custom(mut self, c: Option<CustomColor>) -> Self {

@@ -31,11 +31,19 @@ pub fn reset_exif_orientation(exif: &mut [u8]) {
     };
     let u16_at = |b: &[u8], i: usize| {
         let v = [b[i], b[i + 1]];
-        if big_endian { u16::from_be_bytes(v) } else { u16::from_le_bytes(v) }
+        if big_endian {
+            u16::from_be_bytes(v)
+        } else {
+            u16::from_le_bytes(v)
+        }
     };
     let Some(ifd) = exif.get(4..8).map(|b| {
         let v = [b[0], b[1], b[2], b[3]];
-        (if big_endian { u32::from_be_bytes(v) } else { u32::from_le_bytes(v) }) as usize
+        (if big_endian {
+            u32::from_be_bytes(v)
+        } else {
+            u32::from_le_bytes(v)
+        }) as usize
     }) else {
         return;
     };
@@ -50,9 +58,17 @@ pub fn reset_exif_orientation(exif: &mut [u8]) {
         }
         if u16_at(exif, e) == ORIENTATION_TAG {
             let value_count = &exif[e + 4..e + 8];
-            let single = if big_endian { value_count == [0, 0, 0, 1] } else { value_count == [1, 0, 0, 0] };
+            let single = if big_endian {
+                value_count == [0, 0, 0, 1]
+            } else {
+                value_count == [1, 0, 0, 0]
+            };
             if u16_at(exif, e + 2) == TYPE_SHORT && single {
-                let one = if big_endian { 1u16.to_be_bytes() } else { 1u16.to_le_bytes() };
+                let one = if big_endian {
+                    1u16.to_be_bytes()
+                } else {
+                    1u16.to_le_bytes()
+                };
                 exif[e + 8..e + 10].copy_from_slice(&one);
             }
             return;
@@ -91,9 +107,25 @@ mod tests {
 
     /// Big- and little-endian TIFF with IFD0 = { Orientation SHORT 1 = 6 }.
     fn exif_with_orientation(big_endian: bool) -> Vec<u8> {
-        let w16 = |v: u16| if big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
-        let w32 = |v: u32| if big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
-        let mut v = if big_endian { b"MM\0*".to_vec() } else { b"II*\0".to_vec() };
+        let w16 = |v: u16| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let w32 = |v: u32| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let mut v = if big_endian {
+            b"MM\0*".to_vec()
+        } else {
+            b"II*\0".to_vec()
+        };
         v.extend_from_slice(&w32(8));
         v.extend_from_slice(&w16(1));
         v.extend_from_slice(&w16(ORIENTATION_TAG));

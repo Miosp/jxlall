@@ -1,9 +1,9 @@
 //! Encoder handle: RAII over encoder + parallel runner.
 
-use std::ffi::c_void;
-use std::ptr::null;
 use jpegxl_sys::encoder::encode::*;
 use jpegxl_sys::threads::resizable_parallel_runner::*;
+use std::ffi::c_void;
+use std::ptr::null;
 
 #[derive(Debug)]
 pub struct EncodeError(String);
@@ -24,9 +24,7 @@ pub fn check(status: JxlEncoderStatus, what: &str) -> Result<(), EncodeError> {
     match status {
         JxlEncoderStatus::Success => Ok(()),
         JxlEncoderStatus::Error => err(format!("libjxl error during {what}")),
-        JxlEncoderStatus::NeedMoreOutput => {
-            err(format!("unexpected NeedMoreOutput during {what}"))
-        }
+        JxlEncoderStatus::NeedMoreOutput => err(format!("unexpected NeedMoreOutput during {what}")),
     }
 }
 

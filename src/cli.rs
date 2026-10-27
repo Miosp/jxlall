@@ -46,7 +46,11 @@ struct Args {
     recursive: bool,
 
     /// Extension filter for directory scans, `|`-separated.
-    #[arg(short, long, default_value = ".jpg|.jpeg|.png|.webp|.heic|.heif|.avif|.tif|.tiff")]
+    #[arg(
+        short,
+        long,
+        default_value = ".jpg|.jpeg|.png|.webp|.heic|.heif|.avif|.tif|.tiff"
+    )]
     pattern: String,
 
     /// Delete source files after successful conversion.
