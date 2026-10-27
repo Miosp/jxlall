@@ -16,6 +16,11 @@ allow = [
     "CC0-1.0",
     "GPL-3.0-or-later",
     "AGPL-3.0-only",
+    # Quality rating (`iqa` feature): ISC and CDLA-Permissive-2.0 come with
+    # rustls (model downloads), MPL-2.0 with `directories` (cache path).
+    "ISC",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
 ]
 
 [bans]

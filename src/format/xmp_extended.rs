@@ -10,7 +10,7 @@ pub const EXTENSION_SIG: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
 const GUID_LEN: usize = 32;
 const HEADER_LEN: usize = EXTENSION_SIG.len() + GUID_LEN + 8;
 const XMP_NOTE_NS: &str = "http://ns.adobe.com/xmp/note/";
-const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+pub(crate) const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const HAS_EXTENDED: &str = "HasExtendedXMP";
 
 pub struct Chunk<'a> {

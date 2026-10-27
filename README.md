@@ -65,6 +65,7 @@ jxlall [OPTIONS] [INPUTS]...
       --add-noise          add film grain from the source ISO (lossy only;
                            JPEGs also need --force-lossy-jpeg)
       --noise-strength <F> grain multiplier (default 1.0)
+      --iqa                rate each photo (see Quality rating)
       --keep-going         continue after errors
       --dry-run            list what would be converted
   -v, --verbose            per-file logging
@@ -79,6 +80,46 @@ makes the exit status non-zero.
 grain parameters matching the original ISO (scaled for sensor size when
 EXIF has the 35 mm focal length), and the decoder synthesizes the grain at
 a cost of a few bytes.
+
+## Quality rating
+
+`--iqa` scores each photo with two [Charm](https://github.com/FBehrad/Charm)
+models (CVPR 2025, DINOv2-small, ONNX exports from
+[Miosp/charm-onnx](https://huggingface.co/Miosp/charm-onnx)) and stores both
+scores, 0 to 1, in XMP under `http://ns.jxlall/iqa/1.0/`:
+
+- `Technical`: detail and technical quality (`--iqa-technical spaq|koniq10k`,
+  default `spaq`).
+- `Aesthetic`: aesthetics and composition (`--iqa-aesthetic
+  para|aadb|tad66k|baid`, default `para`).
+
+Each score is written with its model id; scores from different models are not
+comparable. Charm sees the whole frame at its own aspect ratio, as displayed
+(EXIF orientation applied), and keeps the 64 sharpest regions at full
+resolution, so intentional blur such as bokeh is judged in context. Photos
+are first downscaled to 1024 px; upstream Charm does that only for `spaq`
+and `para`, so scores of the other models differ from upstream on larger
+images.
+
+`--iqa-stars T2,T3,T4,T5` also writes `xmp:Rating` (1 to 5 stars, read by
+Lightroom, darktable, digiKam and Windows) from the mean of both scores:
+the values are the minimum for 2, 3, 4 and 5 stars. A rating the source
+already has is kept unless `--overwrite-rating`; `xmp:Rating="0"` (unrated)
+does not count, a reject (`-1`) does. A photo that cannot be scored
+converts unrated, with a note.
+
+The models (about 90 MB each) are downloaded on first use to the user cache
+(`~/.cache/jxlall/models`, `%LOCALAPPDATA%\jxlall\cache\models`,
+`~/Library/Caches/jxlall/models`) and checked by SHA-256 on every run.
+Rating costs roughly 1.5 s per photo on a 16-core CPU. A recompressed JPEG
+without XMP stays restorable byte for byte (the rating lives in a separate
+box); one with XMP gets the rating written into the packet's padding, so
+the restored JPEG carries it, or is left unrated with a note when there is
+no room.
+
+Rating needs ONNX Runtime, which has no build for musl or x86-64 macOS:
+those binaries (and `cargo build --no-default-features`) come without
+`--iqa`. The Charm code and checkpoints are Apache-2.0.
 
 ## License
 

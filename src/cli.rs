@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::domain::StarThresholds;
 use crate::encode::{Distance, Effort, EncodeSettings, NoiseStrength};
+use crate::iqa::{AestheticModel, IqaOptions, TechnicalModel};
 
 #[derive(Parser, Debug)]
 #[command(name = "jxlall", version, about = "Convert photos to JPEG XL")]
@@ -69,6 +71,29 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_NOISE_STRENGTH)]
     noise_strength: f32,
 
+    /// Rate each image and store a technical (detail) and an aesthetic
+    /// (composition) score, each 0..1, in XMP. Models (about 90 MB each)
+    /// are downloaded once to the user cache.
+    #[arg(long)]
+    iqa: bool,
+
+    /// Model for the technical score [default: spaq].
+    #[arg(long, value_enum)]
+    iqa_technical: Option<TechnicalModel>,
+
+    /// Model for the aesthetic score [default: para].
+    #[arg(long, value_enum)]
+    iqa_aesthetic: Option<AestheticModel>,
+
+    /// Also write `xmp:Rating` stars from the mean of both scores: minimum
+    /// values for 2, 3, 4 and 5 stars, comma-separated (lower gets 1 star).
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    iqa_stars: Option<Vec<f32>>,
+
+    /// Replace a star rating the source already has.
+    #[arg(long)]
+    overwrite_rating: bool,
+
     /// Verbose per-file logging.
     #[arg(short, long)]
     verbose: bool,
@@ -100,6 +125,7 @@ pub struct RunOptions {
     pub recursive: bool,
     pub pattern: String,
     pub delete_originals: bool,
+    pub iqa: Option<IqaOptions>,
     pub verbose: bool,
 }
 
@@ -122,6 +148,13 @@ pub fn parse() -> Result<RunOptions, String> {
             "note: JPEGs recompressed losslessly get no grain; add --force-lossy-jpeg for them"
         );
     }
+    let stars = args.iqa_stars.map(StarThresholds::try_from).transpose()?;
+    let iqa_extras = args.iqa_technical.is_some() || args.iqa_aesthetic.is_some();
+    if !args.iqa && (iqa_extras || stars.is_some() || args.overwrite_rating) {
+        eprintln!("warning: --iqa-* and --overwrite-rating options have no effect without --iqa");
+    } else if stars.is_none() && args.overwrite_rating {
+        eprintln!("warning: --overwrite-rating has no effect without --iqa-stars");
+    }
     if args.jobs.is_some_and(|j| j > MAX_JOBS) {
         eprintln!("note: --jobs capped at {MAX_JOBS}");
     }
@@ -140,6 +173,12 @@ pub fn parse() -> Result<RunOptions, String> {
         recursive: args.recursive,
         pattern: args.pattern,
         delete_originals: args.delete_originals,
+        iqa: args.iqa.then(|| IqaOptions {
+            technical: args.iqa_technical.unwrap_or(TechnicalModel::Spaq),
+            aesthetic: args.iqa_aesthetic.unwrap_or(AestheticModel::Para),
+            stars,
+            overwrite_stars: args.overwrite_rating,
+        }),
         verbose: args.verbose,
     })
 }
