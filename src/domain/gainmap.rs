@@ -6,12 +6,13 @@
 //! - Apple HEIC auxiliary item: `heic::HdrGainMap::xmp`
 //!   (`urn:com:apple:photo:2020:aux:hdrgainmap`), converted field-by-field.
 //!
-//! Target: `jhgm` = JxlGainMapBundle{ metadata (ISO 21496-1, `JpegApp2`
+//! Target: `jhgm` = JxlGainMapBundle{ metadata (ISO 21496-1, `JxlJhgm`
 //! layout = no version prefix), gain map as naked JXL codestream }.
 
 use crate::encode::{EncodeError, EncodeSettings, build_jhgm_box, encode_gain_map_gray};
-use ultrahdr_core::metadata::iso21496::{parse_iso21496, serialize_iso21496};
-use ultrahdr_core::{GainMapMetadata, Iso21496Format};
+use ultrahdr_core::{
+    GainMapChannel, GainMapMetadata, Iso21496Format, parse_iso21496_fmt, serialize_iso21496_fmt,
+};
 
 /// Gain map ready for `jhgm` assembly.
 pub struct GainMapData {
@@ -40,7 +41,7 @@ pub fn from_heic(g: heic::HdrGainMap) -> Result<Option<GainMapData>, String> {
         let Some(md) = apple_xmp_to_metadata(xmp)? else {
             return Err("Apple gain map XMP has no ISO 21496-1 fields".into());
         };
-        serialize_iso21496(&md, Iso21496Format::JpegApp2)
+        serialize_iso21496_fmt(&md, Iso21496Format::JxlJhgm)
     } else {
         return Ok(None);
     };
@@ -56,14 +57,14 @@ pub fn from_heic(g: heic::HdrGainMap) -> Result<Option<GainMapData>, String> {
 /// byte it is exactly what the jhgm bundle wants, so it is copied verbatim
 /// rather than re-serialized (which would re-quantize the rationals).
 fn tmap_metadata(tmap: &[u8]) -> Result<Vec<u8>, String> {
-    let md = parse_iso21496(tmap, Iso21496Format::AvifTmap)
+    let md = parse_iso21496_fmt(tmap, Iso21496Format::AvifTmap)
         .map_err(|e| format!("tmap metadata: {e}"))?;
     // heic exposes only the Y plane: per-channel metadata would be paired
     // with the wrong image.
     let multichannel_flag = tmap
         .get(TMAP_FLAGS_OFFSET)
         .is_some_and(|f| f & TMAP_FLAG_MULTI_CHANNEL != 0);
-    if multichannel_flag || !is_single_channel(&md) {
+    if multichannel_flag || !md.is_single_channel() {
         return Err("multichannel gain map metadata, only one plane available".into());
     }
     Ok(tmap[TMAP_VERSION_LEN..].to_vec())
@@ -74,15 +75,6 @@ const TMAP_VERSION_LEN: usize = 1;
 /// Flags byte: after version(1), minimum_version(2), writer_version(2).
 const TMAP_FLAGS_OFFSET: usize = 5;
 const TMAP_FLAG_MULTI_CHANNEL: u8 = 0x80;
-
-fn is_single_channel(md: &GainMapMetadata) -> bool {
-    let same = |a: &[f64; 3]| a[0] == a[1] && a[1] == a[2];
-    same(&md.gain_map_min)
-        && same(&md.gain_map_max)
-        && same(&md.gamma)
-        && same(&md.base_offset)
-        && same(&md.alternate_offset)
-}
 
 /// Apple `urn:com:apple:photo:2020:aux:hdrgainmap` XMP → ISO 21496-1.
 ///
@@ -112,34 +104,30 @@ fn apple_xmp_to_metadata(xmp: &str) -> Result<Option<GainMapMetadata>, String> {
     if !FIELDS.iter().any(|f| present(f)) {
         return Ok(None);
     }
-    let mut md = GainMapMetadata::new();
-    md.gain_map_min = [ratio_or(xmp, "GainMapMin", 0.0); 3];
-    md.gain_map_max = [ratio_or(xmp, "GainMapMax", 1.0); 3];
-    md.gamma = [ratio_or(xmp, "Gamma", 1.0); 3];
-    md.base_offset = [ratio_or(xmp, "OffsetSDR", 1.0 / 64.0); 3];
-    md.alternate_offset = [ratio_or(xmp, "OffsetHDR", 1.0 / 64.0); 3];
+    let channel = GainMapChannel {
+        min: ratio_or(xmp, "GainMapMin", 0.0),
+        max: ratio_or(xmp, "GainMapMax", 1.0),
+        gamma: ratio_or(xmp, "Gamma", 1.0),
+        base_offset: ratio_or(xmp, "OffsetSDR", 1.0 / 64.0),
+        alternate_offset: ratio_or(xmp, "OffsetHDR", 1.0 / 64.0),
+    };
+    let mut md = GainMapMetadata::default();
+    md.channels = [channel; 3];
     md.base_hdr_headroom = attr_f64(xmp, "HDRCapacityMin").unwrap_or(0.0);
     md.alternate_hdr_headroom = attr_f64(xmp, "HDRCapacityMax").unwrap_or(1.0);
     md.use_base_color_space = true;
     md.backward_direction = false;
-    if ![md.base_hdr_headroom, md.alternate_hdr_headroom]
-        .iter()
-        .all(|v| v.is_finite())
-    {
+    let values = [
+        md.base_hdr_headroom,
+        md.alternate_hdr_headroom,
+        channel.min,
+        channel.max,
+        channel.gamma,
+        channel.base_offset,
+        channel.alternate_offset,
+    ];
+    if !values.iter().all(|v| v.is_finite()) {
         return Err("apple gain map: non-finite value".into());
-    }
-    for arr in [
-        &mut md.gain_map_min,
-        &mut md.gain_map_max,
-        &mut md.gamma,
-        &mut md.base_offset,
-        &mut md.alternate_offset,
-    ] {
-        for v in arr.iter_mut() {
-            if !v.is_finite() {
-                return Err("apple gain map: non-finite value".into());
-            }
-        }
     }
     Ok(Some(md))
 }
@@ -201,24 +189,49 @@ mod tests {
         assert_eq!(extract_attr(xmp, "Gamma").as_deref(), Some("2"));
     }
 
+    /// Pinned bytes: a dependency upgrade must not change what is written.
+    #[test]
+    fn apple_metadata_wire_bytes_are_stable() {
+        let xmp = r#"<x auxi:GainMapMax="1.25" auxi:HDRCapacityMax="2.5" auxi:GammaNumerator="3" auxi:GammaDenominator="2"/>"#;
+        let md = apple_xmp_to_metadata(xmp).unwrap().expect("parsed");
+        let expected: [u8; 61] = [
+            0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03, 0x00,
+            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x40,
+        ];
+        assert_eq!(
+            serialize_iso21496_fmt(&md, Iso21496Format::JxlJhgm),
+            expected
+        );
+    }
+
     #[test]
     fn tmap_payload_is_copied_verbatim() {
-        let mut md = GainMapMetadata::new();
-        md.gain_map_max = [1.3; 3];
+        let mut md = GainMapMetadata::default();
+        md.channels = [GainMapChannel {
+            max: 1.3,
+            ..Default::default()
+        }; 3];
         md.alternate_hdr_headroom = 1.7;
-        let tmap = serialize_iso21496(&md, Iso21496Format::AvifTmap);
+        let tmap = serialize_iso21496_fmt(&md, Iso21496Format::AvifTmap);
         assert_eq!(tmap_metadata(&tmap).unwrap(), tmap[TMAP_VERSION_LEN..]);
     }
 
     #[test]
     fn multichannel_tmap_is_rejected() {
-        let mut md = GainMapMetadata::new();
-        md.gain_map_max = [1.0, 2.0, 3.0];
-        let tmap = serialize_iso21496(&md, Iso21496Format::AvifTmap);
+        let with_max = |max| GainMapChannel {
+            max,
+            ..Default::default()
+        };
+        let mut md = GainMapMetadata::default();
+        md.channels = [with_max(1.0), with_max(2.0), with_max(3.0)];
+        let tmap = serialize_iso21496_fmt(&md, Iso21496Format::AvifTmap);
         assert!(tmap_metadata(&tmap).is_err());
         // Equal channels but the multichannel flag set: still 3 declared.
-        md.gain_map_max = [2.0; 3];
-        let mut tmap = serialize_iso21496(&md, Iso21496Format::AvifTmap);
+        md.channels = [with_max(2.0); 3];
+        let mut tmap = serialize_iso21496_fmt(&md, Iso21496Format::AvifTmap);
         tmap[TMAP_FLAGS_OFFSET] |= TMAP_FLAG_MULTI_CHANNEL;
         assert!(tmap_metadata(&tmap).is_err());
     }
