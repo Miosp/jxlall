@@ -19,7 +19,7 @@ png = "0.18"
 tiff = "0.11"
 kamadak-exif = "0.6"
 clap = { version = "4", features = ["derive"] }
-ultrahdr-core = { version = "0.4", default-features = false, features = ["std"] }
+ultrahdr-core = { version = "0.6", default-features = false, features = ["std"] }
 roxmltree = "0.21.1"
 
 [target.'cfg(unix)'.dependencies]
