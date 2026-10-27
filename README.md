@@ -71,5 +71,7 @@ a cost of a few bytes.
 
 ## License
 
-AGPL-3.0-only. Bundles libjxl (BSD) via `jpegxl-sys` (GPL); `heic` and `zenwebp`
-are AGPL (commercial licenses available from Imazen).
+The source code is MIT. A built binary is not: it statically links `heic`,
+`zenwebp` and `rav1d-safe` (AGPL-3.0, or commercial from Imazen) and
+`jpegxl-sys` (GPL-3.0, bundling BSD-licensed libjxl), so distributing a
+binary means following AGPL-3.0 terms.
