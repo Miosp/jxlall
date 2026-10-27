@@ -2,6 +2,7 @@
 name = "jxlall"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.93"
 license = "MIT"
 description = "Convert a photo library to JPEG XL, keeping pixels, color and metadata"
 repository = "https://github.com/Miosp/jxlall"
