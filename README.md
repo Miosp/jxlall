@@ -1,4 +1,4 @@
-# photo-convert
+# jxlall
 
 Convert photos to JPEG XL. Single binary, Linux + Windows, parallel via compio
 (thread-per-core async I/O + bounded blocking decode/encode pool).
@@ -126,7 +126,7 @@ costs only a few bytes.
 ## CLI
 
 ```
-photo-convert [OPTIONS] [INPUTS]...
+jxlall [OPTIONS] [INPUTS]...
   -o, --output <DIR>      output directory (mirrors input structure)
   -e, --effort <1..=10>   encoder effort (default 7)
   -d, --distance <F32>    lossy distance for the pixel path (0 = lossless, default)

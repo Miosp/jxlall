@@ -9,7 +9,7 @@ use crate::encode::{Distance, Effort, EncodeSettings, NoiseStrength};
 use crate::iqa::{IqaModel, IqaOptions};
 
 #[derive(Parser, Debug)]
-#[command(name = "photo-convert", version, about = "Convert photos to JPEG XL")]
+#[command(name = "jxlall", version, about = "Convert photos to JPEG XL")]
 struct Args {
     /// Input files and/or directories (directories are scanned; add
     /// --recursive to descend into subdirectories).

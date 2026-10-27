@@ -15,7 +15,7 @@ const BYTES_PER_MB: u64 = 1_000_000;
 /// Path of the verified model file, downloading it first when missing or
 /// corrupt.
 pub fn ensure(spec: &ModelSpec) -> Result<PathBuf, String> {
-    let dirs = directories::ProjectDirs::from("", "", "photo-convert")
+    let dirs = directories::ProjectDirs::from("", "", "jxlall")
         .ok_or("no home directory for the model cache")?;
     let dir = dirs.cache_dir().join("models");
     let path = dir.join(spec.file_name);
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn verifies_size_and_digest() {
-        let path = std::env::temp_dir().join(format!("photo-convert-fetch-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("jxlall-fetch-{}", std::process::id()));
         std::fs::write(&path, b"abc").unwrap();
         assert!(verify_file(&path, 3, ABC_SHA256).is_ok());
         assert!(verify_file(&path, 4, ABC_SHA256).is_err());

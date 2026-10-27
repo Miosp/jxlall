@@ -11,7 +11,7 @@ use crate::domain::Rating;
 
 const XMP_NS: &str = "http://ns.adobe.com/xap/1.0/";
 const RATING: &str = "Rating";
-pub const IQA_NS: &str = "http://ns.photo-convert/iqa/1.0/";
+pub const IQA_NS: &str = "http://ns.jxlall/iqa/1.0/";
 const IQA_PREFIX: &str = "pciqa";
 const SCORE_DECIMALS: usize = 4;
 const PACKET_TRAILER: &[u8] = b"<?xpacket end=";
