@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-compio = { version = "0.19", features = ["runtime", "fs"] }
+compio = { version = "0.19", features = ["runtime", "fs", "polling"] }
 jpegxl-sys = { version = "0.13", features = ["vendored"] }
 heic = { version = "0.1.6", features = ["std", "av1"] }
 zenwebp = "0.4"

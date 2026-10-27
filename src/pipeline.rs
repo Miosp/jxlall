@@ -592,10 +592,13 @@ fn rename_noreplace(tmp: &Path, dst: &Path) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
     let (from, to) = (c_path(tmp)?, c_path(dst)?);
+    // Raw syscall: the musl bundled with Rust's static target has no
+    // renameat2 wrapper.
     // SAFETY: both arguments are valid NUL-terminated strings that outlive
     // the call; AT_FDCWD resolves them like rename(2).
     let rc = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             from.as_ptr(),
             libc::AT_FDCWD,
