@@ -30,6 +30,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         height: u32::from(info.height),
         bit_depth: 8,
         has_alpha,
+        alpha_premultiplied: false,
         pixels: Pixels::U8(pixels),
     };
     Ok(Decoded::Image(Box::new(

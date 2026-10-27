@@ -4,10 +4,12 @@ mod color;
 mod gainmap;
 mod image;
 mod metadata;
+mod noise;
 mod orientation;
 
-pub use color::{Cicp, ColorDesc};
+pub use color::{Cicp, ColorDesc, CustomColor, IccSpace};
 pub use gainmap::{from_heic, GainMapData};
 pub use image::{Decoded, DecodedImage, Hdr, ImageFrame, Pixels};
-pub use metadata::MetaBoxes;
+pub use metadata::{reset_exif_orientation, strip_exif_prefix, MetaBoxes};
+pub use noise::iso_from_exif;
 pub use orientation::Orientation;

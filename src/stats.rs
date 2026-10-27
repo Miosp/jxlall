@@ -46,7 +46,11 @@ impl Stats {
     }
 
     pub fn record_fail(&self) {
-        self.failed.fetch_add(1, Ordering::Relaxed);
+        self.record_fails(1);
+    }
+
+    pub fn record_fails(&self, n: u64) {
+        self.failed.fetch_add(n, Ordering::Relaxed);
     }
 
     /// Failures so far.

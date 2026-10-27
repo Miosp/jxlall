@@ -29,35 +29,59 @@ impl GainMapData {
     }
 }
 
-/// Convert a decoded heic gain map; `None` when the file carries neither the
-/// tmap binary metadata nor the Apple XMP. Consumes `g` — the pixel buffer
-/// moves in, no copy.
+/// Convert a decoded heic gain map; `None` when the file carries neither
+/// usable tmap binary metadata nor recognizable Apple XMP. Consumes `g` —
+/// the pixel buffer moves in, no copy.
 pub fn from_heic(g: heic::HdrGainMap) -> Result<Option<GainMapData>, String> {
-    if let Some(tmap) = g.iso21496.as_deref() {
-        // AvifTmap carries a version byte; the jhgm bundle wants the bare
-        // ISO 21496-1 payload.
-        let md = parse_iso21496(tmap, Iso21496Format::AvifTmap)
-            .map_err(|e| format!("tmap metadata: {e}"))?;
-        let iso = serialize_iso21496(&md, Iso21496Format::JpegApp2);
-        return Ok(Some(GainMapData {
-            iso_metadata: iso,
-            width: g.width,
-            height: g.height,
-            gray: g.data,
-        }));
-    }
-    if let Some(xmp) = g.xmp.as_deref() {
+    let iso_metadata = if let Some(tmap) = g.iso21496.as_deref() {
+        tmap_metadata(tmap)?
+    } else if let Some(xmp) = g.xmp.as_deref() {
         let xmp = std::str::from_utf8(xmp).map_err(|e| format!("gain map xmp: {e}"))?;
-        let md = apple_xmp_to_metadata(xmp)?;
-        let iso = serialize_iso21496(&md, Iso21496Format::JpegApp2);
-        return Ok(Some(GainMapData {
-            iso_metadata: iso,
-            width: g.width,
-            height: g.height,
-            gray: g.data,
-        }));
+        let Some(md) = apple_xmp_to_metadata(xmp)? else {
+            return Err("Apple gain map XMP has no ISO 21496-1 fields".into());
+        };
+        serialize_iso21496(&md, Iso21496Format::JpegApp2)
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(GainMapData {
+        iso_metadata,
+        width: g.width,
+        height: g.height,
+        gray: g.data,
+    }))
+}
+
+/// Validated ISO 21496-1 payload of an AVIF `tmap` item. Past the version
+/// byte it is exactly what the jhgm bundle wants, so it is copied verbatim
+/// rather than re-serialized (which would re-quantize the rationals).
+fn tmap_metadata(tmap: &[u8]) -> Result<Vec<u8>, String> {
+    let md = parse_iso21496(tmap, Iso21496Format::AvifTmap)
+        .map_err(|e| format!("tmap metadata: {e}"))?;
+    // heic exposes only the Y plane: per-channel metadata would be paired
+    // with the wrong image.
+    let multichannel_flag = tmap
+        .get(TMAP_FLAGS_OFFSET)
+        .is_some_and(|f| f & TMAP_FLAG_MULTI_CHANNEL != 0);
+    if multichannel_flag || !is_single_channel(&md) {
+        return Err("multichannel gain map metadata, only one plane available".into());
     }
-    Ok(None)
+    Ok(tmap[TMAP_VERSION_LEN..].to_vec())
+}
+
+/// AvifTmap prefixes the ISO 21496-1 payload with a one-byte version.
+const TMAP_VERSION_LEN: usize = 1;
+/// Flags byte: after version(1), minimum_version(2), writer_version(2).
+const TMAP_FLAGS_OFFSET: usize = 5;
+const TMAP_FLAG_MULTI_CHANNEL: u8 = 0x80;
+
+fn is_single_channel(md: &GainMapMetadata) -> bool {
+    let same = |a: &[f64; 3]| a[0] == a[1] && a[1] == a[2];
+    same(&md.gain_map_min)
+        && same(&md.gain_map_max)
+        && same(&md.gamma)
+        && same(&md.base_offset)
+        && same(&md.alternate_offset)
 }
 
 /// Apple `urn:com:apple:photo:2020:aux:hdrgainmap` XMP → ISO 21496-1.
@@ -69,7 +93,25 @@ pub fn from_heic(g: heic::HdrGainMap) -> Result<Option<GainMapData>, String> {
 ///
 /// Apple writes rational fields as `auxi:<Name>Numerator`/`<Name>Denominator`
 /// pairs; HDRCapacity* are plain decimals.
-fn apple_xmp_to_metadata(xmp: &str) -> Result<GainMapMetadata, String> {
+///
+/// `None` when none of the fields is present: defaults alone would describe
+/// a gain map that does not exist.
+fn apple_xmp_to_metadata(xmp: &str) -> Result<Option<GainMapMetadata>, String> {
+    const FIELDS: [&str; 7] = [
+        "GainMapMin",
+        "GainMapMax",
+        "Gamma",
+        "OffsetSDR",
+        "OffsetHDR",
+        "HDRCapacityMin",
+        "HDRCapacityMax",
+    ];
+    let present = |f: &str| {
+        extract_attr(xmp, f).is_some() || extract_attr(xmp, &format!("{f}Numerator")).is_some()
+    };
+    if !FIELDS.iter().any(|f| present(f)) {
+        return Ok(None);
+    }
     let mut md = GainMapMetadata::new();
     md.gain_map_min = [ratio_or(xmp, "GainMapMin", 0.0); 3];
     md.gain_map_max = [ratio_or(xmp, "GainMapMax", 1.0); 3];
@@ -99,7 +141,7 @@ fn apple_xmp_to_metadata(xmp: &str) -> Result<GainMapMetadata, String> {
             }
         }
     }
-    Ok(md)
+    Ok(Some(md))
 }
 
 fn attr_f64(xmp: &str, name: &str) -> Option<f64> {
@@ -121,10 +163,63 @@ fn extract_attr(xmp: &str, name: &str) -> Option<String> {
     let auxi = format!("auxi:{name}=\"");
     let bare = format!("{name}=\"");
     for prefix in [auxi.as_str(), bare.as_str()] {
-        let Some(start) = xmp.find(prefix) else { continue };
+        // The match must start a whole (local) attribute name, so `Gamma`
+        // does not hit `GainMapGamma`; any namespace prefix is accepted.
+        let Some((start, _)) = xmp
+            .match_indices(prefix)
+            .find(|&(i, _)| !xmp[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+        else {
+            continue;
+        };
         let rest = &xmp[start + prefix.len()..];
         let Some(end) = rest.find('"') else { continue };
         return Some(rest[..end].to_string());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apple_xmp_without_fields_yields_none() {
+        let xmp = r#"<rdf:Description HDRGainMap:HDRGainMapVersion="65536"/>"#;
+        assert!(apple_xmp_to_metadata(xmp).unwrap().is_none());
+    }
+
+    #[test]
+    fn apple_xmp_with_headroom_is_parsed() {
+        let xmp = r#"<rdf:Description auxi:HDRCapacityMax="2.5"/>"#;
+        let md = apple_xmp_to_metadata(xmp).unwrap().expect("parsed");
+        assert_eq!(md.alternate_hdr_headroom, 2.5);
+    }
+
+    #[test]
+    fn attribute_names_are_matched_whole() {
+        let xmp = r#"<x auxi:GainMapGamma="8" hdrgm:Gamma="2"/>"#;
+        assert_eq!(extract_attr(xmp, "Gamma").as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn tmap_payload_is_copied_verbatim() {
+        let mut md = GainMapMetadata::new();
+        md.gain_map_max = [1.3; 3];
+        md.alternate_hdr_headroom = 1.7;
+        let tmap = serialize_iso21496(&md, Iso21496Format::AvifTmap);
+        assert_eq!(tmap_metadata(&tmap).unwrap(), tmap[TMAP_VERSION_LEN..]);
+    }
+
+    #[test]
+    fn multichannel_tmap_is_rejected() {
+        let mut md = GainMapMetadata::new();
+        md.gain_map_max = [1.0, 2.0, 3.0];
+        let tmap = serialize_iso21496(&md, Iso21496Format::AvifTmap);
+        assert!(tmap_metadata(&tmap).is_err());
+        // Equal channels but the multichannel flag set: still 3 declared.
+        md.gain_map_max = [2.0; 3];
+        let mut tmap = serialize_iso21496(&md, Iso21496Format::AvifTmap);
+        tmap[TMAP_FLAGS_OFFSET] |= TMAP_FLAG_MULTI_CHANNEL;
+        assert!(tmap_metadata(&tmap).is_err());
+    }
 }

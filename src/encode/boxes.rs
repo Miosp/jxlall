@@ -25,6 +25,8 @@ pub(super) fn add_metadata_boxes(e: &Enc, meta: &MetaBoxes) -> Result<(), Encode
             return Ok(());
         }
         check(JxlEncoderUseBoxes(e.enc), "UseBoxes")?;
+        // Exif/xml stay uncompressed: many readers (older exiftool, exiv2
+        // without brotli) cannot open `brob` boxes.
         if let Some(exif) = meta.exif.as_deref() {
             // Exif box content starts with a 4-byte offset to the TIFF header;
             // 0 = header follows immediately.
@@ -33,14 +35,14 @@ pub(super) fn add_metadata_boxes(e: &Enc, meta: &MetaBoxes) -> Result<(), Encode
             payload.extend_from_slice(exif);
             let t = box_type(b"Exif");
             check(
-                JxlEncoderAddBox(e.enc, &t, payload.as_ptr(), payload.len(), true.into()),
+                JxlEncoderAddBox(e.enc, &t, payload.as_ptr(), payload.len(), false.into()),
                 "AddBox(Exif)",
             )?;
         }
         if let Some(xmp) = meta.xmp.as_deref() {
             let t = box_type(b"xml ");
             check(
-                JxlEncoderAddBox(e.enc, &t, xmp.as_ptr(), xmp.len(), true.into()),
+                JxlEncoderAddBox(e.enc, &t, xmp.as_ptr(), xmp.len(), false.into()),
                 "AddBox(XMP)",
             )?;
         }

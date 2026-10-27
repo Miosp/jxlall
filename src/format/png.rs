@@ -1,7 +1,8 @@
 //! PNG decode: cICP/iCCP/eXIf metadata + 8/16-bit pixels.
 
 use crate::domain::{
-    Cicp, ColorDesc, Decoded, DecodedImage, Hdr, ImageFrame, MetaBoxes, Orientation, Pixels,
+    strip_exif_prefix, Cicp, ColorDesc, CustomColor, Decoded, DecodedImage, Hdr, ImageFrame,
+    MetaBoxes, Orientation, Pixels,
 };
 use super::png_text::scan_text_chunks;
 
@@ -58,12 +59,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
             (Pixels::U8(px), alpha)
         }
         png::BitDepth::Sixteen => {
-            // PNG 16-bit output is big-endian; the encoder wants native u16.
-            let native: Vec<u16> = buf
-                .as_chunks::<2>().0.iter()
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            let (px, alpha) = expand_to_rgb16(native, color_type);
+            let (px, alpha) = expand_to_rgb16(&buf, color_type);
             (Pixels::U16(px), alpha)
         }
         d => return Err(format!("unsupported PNG bit depth {d:?}")),
@@ -84,7 +80,8 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         .exif_metadata
         .as_deref()
         .map(<[u8]>::to_vec)
-        .or(text.raw_exif);
+        .or(text.raw_exif)
+        .map(strip_exif_prefix);
     let orientation = Orientation::from_exif(exif.as_deref()).unwrap_or_default();
 
     let frame = ImageFrame {
@@ -95,17 +92,67 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
             _ => 16,
         },
         has_alpha,
+        alpha_premultiplied: false,
         pixels,
     };
     Ok(Decoded::Image(Box::new(
         DecodedImage::new(
             frame,
-            ColorDesc::new(cicp, info.icc_profile.as_deref().map(<[u8]>::to_vec)),
+            ColorDesc::new(cicp, info.icc_profile.as_deref().map(<[u8]>::to_vec))
+                .custom(gama_chrm(&info)),
             MetaBoxes::new(exif, text.xmp),
         )
         .orientation(orientation)
         .hdr(hdr),
     )))
+}
+
+/// gAMA/cHRM describe the color only when no cICP, iCCP or sRGB chunk
+/// does (PNG spec precedence).
+fn gama_chrm(info: &png::Info) -> Option<CustomColor> {
+    if info.coding_independent_code_points.is_some()
+        || info.icc_profile.is_some()
+        || info.srgb.is_some()
+    {
+        return None;
+    }
+    let xy = |(x, y): (png::ScaledFloat, png::ScaledFloat)| {
+        [f64::from(x.into_value()), f64::from(y.into_value())]
+    };
+    let gamma = info.gama_chunk.map(|g| f64::from(g.into_value()));
+    let gamma = gamma.filter(|g| {
+        let ok = (MIN_OETF_GAMMA..=1.0).contains(g);
+        if !ok {
+            eprintln!("note: PNG gAMA {g} out of range, ignored");
+        }
+        ok
+    });
+    let chromaticities = info
+        .chrm_chunk
+        .map(|c| [xy(c.white), xy(c.red), xy(c.green), xy(c.blue)])
+        .filter(|c| {
+            let ok = chromaticities_ok(c);
+            if !ok {
+                eprintln!("note: PNG cHRM invalid or degenerate, ignored");
+            }
+            ok
+        });
+    let custom = CustomColor { gamma, chromaticities };
+    (custom.gamma.is_some() || custom.chromaticities.is_some()).then_some(custom)
+}
+
+/// Smallest OETF exponent libjxl accepts (its gamma is stored as 1e7/x).
+const MIN_OETF_GAMMA: f64 = 1.0 / 8192.0;
+/// Minimum |determinant| of the primaries' xyY matrix: below it the
+/// triangle is degenerate and libjxl fails late, in ProcessOutput.
+const MIN_PRIMARIES_DET: f64 = 1e-6;
+
+/// Each xy inside the unit triangle and the RGB primaries non-collinear.
+fn chromaticities_ok(c: &[[f64; 2]; 4]) -> bool {
+    let in_gamut = c.iter().all(|&[x, y]| x > 0.0 && y > 0.0 && x + y <= 1.0);
+    let [_, [rx, ry], [gx, gy], [bx, by]] = *c;
+    let det = rx * (gy - by) - gx * (ry - by) + bx * (ry - gy);
+    in_gamut && det.abs() > MIN_PRIMARIES_DET
 }
 
 fn expand_to_rgb8(buf: Vec<u8>, ct: png::ColorType) -> (Vec<u8>, bool) {
@@ -131,24 +178,43 @@ fn expand_to_rgb8(buf: Vec<u8>, ct: png::ColorType) -> (Vec<u8>, bool) {
     }
 }
 
-fn expand_to_rgb16(buf: Vec<u16>, ct: png::ColorType) -> (Vec<u16>, bool) {
+/// PNG 16-bit samples are big-endian; the encoder wants native u16.
+/// Converted while expanding, so no second full-size buffer is alive.
+fn expand_to_rgb16(buf: &[u8], ct: png::ColorType) -> (Vec<u16>, bool) {
+    let samples = buf.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c));
     match ct {
-        png::ColorType::Rgb => (buf, false),
-        png::ColorType::Rgba => (buf, true),
-        png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity(buf.len() * 3);
-            for &g in &buf {
-                out.extend_from_slice(&[g, g, g]);
-            }
-            (out, false)
-        }
+        png::ColorType::Grayscale => (samples.flat_map(|g| [g, g, g]).collect(), false),
         png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity(buf.len() * 2);
-            for px in buf.as_chunks::<2>().0 {
-                out.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
-            }
-            (out, true)
+            let px = buf.as_chunks::<4>().0.iter().flat_map(|&[g0, g1, a0, a1]| {
+                let g = u16::from_be_bytes([g0, g1]);
+                [g, g, g, u16::from_be_bytes([a0, a1])]
+            });
+            (px.collect(), true)
         }
-        _ => (buf, false),
+        png::ColorType::Rgba => (samples.collect(), true),
+        _ => (samples.collect(), false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chromaticities_reject_zero_and_degenerate() {
+        let srgb = [[0.3127, 0.329], [0.64, 0.33], [0.3, 0.6], [0.15, 0.06]];
+        assert!(chromaticities_ok(&srgb));
+        assert!(!chromaticities_ok(&[[0.0; 2]; 4]));
+        assert!(!chromaticities_ok(&[[0.3127, 0.329]; 4]));
+        assert!(!chromaticities_ok(&[[30.0, 30.0]; 4]));
+    }
+
+    #[test]
+    fn sixteen_bit_gray_alpha_expands_big_endian() {
+        let (px, alpha) = expand_to_rgb16(&[0x12, 0x34, 0xAB, 0xCD], png::ColorType::GrayscaleAlpha);
+        assert!(alpha);
+        assert_eq!(px, [0x1234, 0x1234, 0x1234, 0xABCD]);
+        let (px, _) = expand_to_rgb16(&[0x00, 0x01], png::ColorType::Grayscale);
+        assert_eq!(px, [1, 1, 1]);
     }
 }

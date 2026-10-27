@@ -9,6 +9,9 @@ use crate::sniff::Format;
 /// the whole buffer instead of copying it.
 pub fn decode(data: &Arc<Vec<u8>>, format: Format) -> Result<Vec<Decoded>, String> {
     match format {
+        Format::Jpeg if crate::format::jpeg_markers::is_hierarchical(data) => {
+            Err("hierarchical JPEG not supported (decoders read only the first frame)".into())
+        }
         Format::Jpeg if crate::format::jpeg_markers::is_lossless_sof(data) => {
             crate::format::jpeg_lossless::decode(data).map(|d| vec![d])
         }

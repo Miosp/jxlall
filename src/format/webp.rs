@@ -1,7 +1,8 @@
 //! WebP decode via `zenwebp`: 8-bit RGB(A) + ICC/EXIF/XMP metadata.
 
 use crate::domain::{
-    ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation, Pixels,
+    strip_exif_prefix, ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation,
+    Pixels,
 };
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
@@ -12,12 +13,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
 
     // Wild files often carry the JPEG-style `Exif\0\0` prefix in the EXIF
     // chunk; the JXL Exif box and our parser both expect a bare TIFF header.
-    let exif = std::mem::take(&mut info.exif).map(|mut e| {
-        if e.starts_with(b"Exif\0\0") {
-            e.drain(..6);
-        }
-        e
-    });
+    let exif = std::mem::take(&mut info.exif).map(strip_exif_prefix);
 
     let (px, w, h) = if info.has_alpha {
         zenwebp::oneshot::decode_rgba(data).map_err(|e| format!("WebP decode: {e}"))?
@@ -38,6 +34,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         height: h,
         bit_depth: 8,
         has_alpha: info.has_alpha,
+        alpha_premultiplied: false,
         pixels: Pixels::U8(px),
     };
     // WebP has no CICP; ICC only.

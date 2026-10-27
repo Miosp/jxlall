@@ -7,4 +7,6 @@ pub mod jpeg_markers;
 pub mod png;
 pub mod png_text;
 pub mod tiff;
+pub mod tiff_exif;
 pub mod webp;
+pub mod xmp_extended;

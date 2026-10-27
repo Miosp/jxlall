@@ -23,9 +23,7 @@ pub fn err<T>(msg: impl Into<String>) -> Result<T, EncodeError> {
 pub fn check(status: JxlEncoderStatus, what: &str) -> Result<(), EncodeError> {
     match status {
         JxlEncoderStatus::Success => Ok(()),
-        JxlEncoderStatus::Error => err(format!(
-            "libjxl error during {what} (JxlEncoderGetError: run with debug)"
-        )),
+        JxlEncoderStatus::Error => err(format!("libjxl error during {what}")),
         JxlEncoderStatus::NeedMoreOutput => {
             err(format!("unexpected NeedMoreOutput during {what}"))
         }

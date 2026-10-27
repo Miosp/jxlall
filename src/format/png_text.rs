@@ -14,9 +14,9 @@ pub fn scan_text_chunks(data: &[u8]) -> TextChunks {
     let mut i = 8usize;
     while i + 8 <= data.len() {
         let len = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
-        if i + 12 + len > data.len() {
+        let Some(end) = len.checked_add(i + 12).filter(|&end| end <= data.len()) else {
             break;
-        }
+        };
         let typ = &data[i + 4..i + 8];
         let body = &data[i + 8..i + 8 + len];
         if typ == b"iTXt" && out.xmp.is_none() {
@@ -35,7 +35,7 @@ pub fn scan_text_chunks(data: &[u8]) -> TextChunks {
                 _ => {}
             }
         }
-        i += 12 + len;
+        i = end;
     }
     out
 }
@@ -52,7 +52,7 @@ fn parse_itxt_xmp(body: &[u8]) -> Option<Vec<u8>> {
     }
     let (_lang, rest) = split_nul(&rest[2..]);
     let (_translated, text) = split_nul(rest);
-    Some(text.to_vec())
+    (!text.is_empty()).then(|| text.to_vec())
 }
 
 fn split_nul(buf: &[u8]) -> (&[u8], &[u8]) {

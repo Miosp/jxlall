@@ -8,11 +8,31 @@ pub struct Cicp {
     pub transfer_characteristics: u16,
 }
 
+/// Explicit gamma and/or chromaticities (PNG `gAMA`/`cHRM`), used only
+/// when the source has neither CICP nor ICC.
+#[derive(Debug, Default, Clone)]
+pub struct CustomColor {
+    /// OETF exponent (linear → encoded), e.g. 0.45455 for gamma 2.2.
+    pub gamma: Option<f64>,
+    /// CIE xy of white, red, green, blue.
+    pub chromaticities: Option<[[f64; 2]; 4]>,
+}
+
+/// ICC data color space (header bytes 16..20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IccSpace {
+    Rgb,
+    Gray,
+    /// CMYK, Lab, ...: cannot describe the RGB pixels we produce.
+    Other,
+}
+
 /// Resolved color description of a decoded image.
 #[derive(Default)]
 pub struct ColorDesc {
     pub cicp: Option<Cicp>,
     pub icc: Option<Vec<u8>>,
+    pub custom: Option<CustomColor>,
 }
 
 impl ColorDesc {
@@ -25,7 +45,21 @@ impl ColorDesc {
             }
             None => None,
         };
-        Self { cicp, icc }
+        Self { cicp, icc, custom: None }
+    }
+
+    pub fn custom(mut self, c: Option<CustomColor>) -> Self {
+        self.custom = c;
+        self
+    }
+
+    /// Color space of the (header-validated) ICC profile, if any.
+    pub fn icc_space(&self) -> Option<IccSpace> {
+        self.icc.as_deref().map(|p| match &p[16..20] {
+            b"RGB " => IccSpace::Rgb,
+            b"GRAY" => IccSpace::Gray,
+            _ => IccSpace::Other,
+        })
     }
 }
 

@@ -26,6 +26,8 @@ pub struct ImageFrame {
     /// left-aligned in their storage type per JXL convention.
     pub bit_depth: u8,
     pub has_alpha: bool,
+    /// Color samples are premultiplied by alpha (TIFF associated alpha).
+    pub alpha_premultiplied: bool,
     pub pixels: Pixels,
 }
 
