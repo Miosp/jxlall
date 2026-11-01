@@ -55,8 +55,8 @@ Restored JPEGs are no longer recompressed losslessly, so the original JPEG canno
 be recovered from the output. No other setting changes: with the default `-d 0`,
 restored images are stored losslessly and are usually much larger than the source,
 so you will normally want `-d 1` or similar. Metadata, color profiles and alpha are
-kept, as are HEIF and AVIF gain maps. JPEG gain maps (Ultra HDR) are dropped with a
-note.
+kept, as are HEIF and AVIF gain maps. JPEG gain maps are not kept: those declared
+in XMP (Ultra HDR) get a note, others are dropped silently.
 
 On first use jxlall downloads ONNX Runtime, a GPU backend and the model to the user
 cache. All of them are pinned by SHA-256 and checked on every run. **This means

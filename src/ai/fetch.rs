@@ -50,9 +50,8 @@ pub fn ensure(spec: &Remote) -> Result<PathBuf, String> {
             Err(e) => Err(e.to_string()),
         }
     });
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
+    // Gone after a rename; left over after a failure or a tolerated rename.
+    let _ = std::fs::remove_file(&tmp);
     result.map_err(|e| format!("download {}: {e}", spec.file_name))?;
     Ok(path)
 }
