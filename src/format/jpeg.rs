@@ -1,5 +1,5 @@
-//! JPEG pixel decode via zune-jpeg: the forced-lossy path and inputs jbrd
-//! cannot represent (CMYK, arithmetic).
+//! JPEG pixel decode via zune-jpeg: the forced-lossy path, artifact removal,
+//! and inputs jbrd cannot represent (CMYK, arithmetic).
 
 use super::jpeg_markers::{MAX_PIXELS, scan_segments};
 use crate::domain::{ColorDesc, Decoded, DecodedImage, ImageFrame, MetaBoxes, Orientation, Pixels};

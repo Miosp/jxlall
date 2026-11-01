@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use compio::io::AsyncWriteAtExt;
 
+use crate::ai::dejpeg::Restorer;
 use crate::cli::RunOptions;
 use crate::domain::{Decoded, DecodedImage};
 use crate::encode::{EncodeError, EncodeSettings, NoiseStrength};
@@ -61,7 +62,13 @@ fn claim_key(path: &Path) -> PathBuf {
 ///
 /// Returns `Err` only when the async driver itself cannot start; per-file
 /// failures are counted in `stats`.
-pub fn run(opts: RunOptions, files: Vec<InputFile>, stats: Arc<Stats>) -> Result<(), String> {
+/// `restorer`: remove JPEG artifacts from the pages it selects.
+pub fn run(
+    opts: RunOptions,
+    files: Vec<InputFile>,
+    stats: Arc<Stats>,
+    restorer: Option<Arc<Restorer>>,
+) -> Result<(), String> {
     let jobs = opts.jobs;
     let keep_going = opts.keep_going;
     let opts = Arc::new(opts);
@@ -86,6 +93,7 @@ pub fn run(opts: RunOptions, files: Vec<InputFile>, stats: Arc<Stats>) -> Result
                 path: f.path,
                 opts: Arc::clone(&opts),
                 stats: Arc::clone(&stats),
+                restorer: restorer.clone(),
                 claimed: Rc::clone(&claimed),
                 total,
             }
@@ -138,6 +146,7 @@ struct Task {
     dst: PathBuf,
     opts: Arc<RunOptions>,
     stats: Arc<Stats>,
+    restorer: Option<Arc<Restorer>>,
     claimed: Claimed,
     total: usize,
 }
@@ -150,11 +159,12 @@ impl Task {
             dst,
             opts,
             stats,
+            restorer,
             claimed,
             total,
         } = self;
         let verbose = opts.verbose;
-        let result = convert_file(&path, &name, &dst, &claimed, &opts, verbose).await;
+        let result = convert_file(&path, &name, &dst, &claimed, &opts, restorer, verbose).await;
         match result {
             Ok((n_in, n_out, written)) => {
                 // Last line of defence: never remove a source that is the
@@ -223,6 +233,7 @@ async fn convert_file(
     dst: &Path,
     claimed: &Claimed,
     opts: &RunOptions,
+    restorer: Option<Arc<Restorer>>,
     verbose: bool,
 ) -> Result<(u64, u64, Vec<PathBuf>), String> {
     let force_lossy_jpeg = opts.force_lossy_jpeg;
@@ -245,7 +256,14 @@ async fn convert_file(
         let path = path.to_path_buf();
         let settings = *settings;
         compio::runtime::spawn_blocking(move || {
-            encode_all(&data, format, force_lossy_jpeg, &settings, &path)
+            encode_all(
+                &data,
+                format,
+                force_lossy_jpeg,
+                &settings,
+                &path,
+                restorer.as_deref(),
+            )
         })
         .await
         .map_err(|e| format!("worker: {e}"))??
@@ -266,10 +284,15 @@ fn encode_all(
     force_lossy_jpeg: bool,
     settings: &EncodeSettings,
     path: &Path,
+    restorer: Option<&Restorer>,
 ) -> Result<Vec<Vec<u8>>, String> {
     let decoded = crate::decode::decode(data, format)?;
     let mut out = Vec::with_capacity(decoded.len());
     for d in decoded {
+        let d = match restorer {
+            Some(restorer) => restore_page(d, restorer, path)?,
+            None => d,
+        };
         let jxl = match d {
             Decoded::Jpeg(jpeg) => {
                 if force_lossy_jpeg {
@@ -294,6 +317,34 @@ fn encode_all(
         out.push(jxl);
     }
     Ok(out)
+}
+
+/// A selected JPEG leaves the lossless path, since its pixels are about to
+/// change. A page that is not selected passes through untouched.
+fn restore_page(page: Decoded, restorer: &Restorer, path: &Path) -> Result<Decoded, String> {
+    if !crate::ai::dejpeg::selects(&page, restorer.all()) {
+        return Ok(page);
+    }
+    let mut img = match page {
+        Decoded::Jpeg(jpeg) => match crate::format::jpeg::decode(&jpeg)? {
+            Decoded::Image(img) => {
+                let xmp = img.meta.xmp.as_deref();
+                if xmp.is_some_and(|x| crate::ai::dejpeg::xmp_declares_gain_map(x)) {
+                    eprintln!(
+                        "note: {}: gain map dropped, --dejpeg keeps only the base image",
+                        path.display()
+                    );
+                }
+                img
+            }
+            Decoded::Jpeg(_) => {
+                return Err("internal: jpeg pixel decode returned passthrough".into());
+            }
+        },
+        Decoded::Image(img) => img,
+    };
+    restorer.restore(&mut img, path)?;
+    Ok(Decoded::Image(img))
 }
 
 fn encode_decoded_image(

@@ -21,9 +21,27 @@ kamadak-exif = "0.6"
 clap = { version = "4", features = ["derive"] }
 ultrahdr-core = { version = "0.6", default-features = false, features = ["std"] }
 roxmltree = "0.21.1"
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-24", "directml"], optional = true }
+libloading = { version = "0.9", optional = true }
+ureq = { version = "3.5", optional = true }
+directories = { version = "6", optional = true }
+sha2 = { version = "0.11", optional = true }
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
+
+[features]
+default = ["ai"]
+# Artifact removal loads ONNX Runtime at run time. Static musl binaries cannot
+# load shared libraries and x86_64 macOS has no official core; build those
+# without this feature.
+ai = ["dep:ort", "dep:libloading", "dep:ureq", "dep:directories", "dep:sha2", "dep:zip", "dep:flate2", "dep:tar"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [profile.release]
 lto = "thin"
+
+[dev-dependencies]
+jpeg-encoder = "0.7"

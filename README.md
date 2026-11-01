@@ -44,6 +44,39 @@ monochrome ones, the usual kind, are kept).
 
 Anything dropped is reported, and the image still converts.
 
+## Artifact removal
+
+`--dejpeg` removes JPEG blocking and ringing with
+[DeJPEGNet v2](https://github.com/Miosp/dejpeg) before encoding. It applies to
+JPEG inputs; `--dejpeg-all` extends it to every input, except HDR, floating-point
+and premultiplied-alpha images, which are encoded unchanged with a note.
+
+Restored JPEGs are no longer recompressed losslessly, so the original JPEG cannot
+be recovered from the output. No other setting changes: with the default `-d 0`,
+restored images are stored losslessly and are usually much larger than the source,
+so you will normally want `-d 1` or similar. Metadata, color profiles and alpha are
+kept, as are HEIF and AVIF gain maps. JPEG gain maps are not kept: those declared
+in XMP (Ultra HDR) get a note, others are dropped silently.
+
+On first use jxlall downloads ONNX Runtime, a GPU backend and the model to the user
+cache. All of them are pinned by SHA-256 and checked on every run. **This means
+jxlall downloads and runs native code from Microsoft, and from NVIDIA where
+applicable.** `--dejpeg-backend cpu` limits that to the ONNX Runtime core.
+
+| Platform | `auto` order |
+|---|---|
+| Linux x86-64, arm64 (`gnu` builds) | TensorRT RTX, WebGPU, CPU |
+| Windows x86-64, arm64 | TensorRT RTX, DirectML, WebGPU, CPU |
+| macOS arm64 | WebGPU, CPU |
+| Linux `musl`, macOS x86-64 | not available |
+
+TensorRT RTX is only tried when an NVIDIA GPU is detected. It needs an RTX GPU
+(GeForce RTX 30 series or newer) and a current driver, and downloads about 100-150
+MB. On Windows, reaching the DirectML step downloads about 200 MB once; pick
+`--dejpeg-backend webgpu` to skip it. Windows also needs the Visual C++ runtime.
+
+Expect minutes per photo on CPU and seconds on a discrete GPU.
+
 ## Safety
 
 `a.jpg` becomes `a.jxl`. Existing files are never overwritten: a name clash
@@ -65,6 +98,9 @@ jxlall [OPTIONS] [INPUTS]...
       --add-noise          add film grain from the source ISO (lossy only;
                            JPEGs also need --force-lossy-jpeg)
       --noise-strength <F> grain multiplier (default 1.0)
+      --dejpeg             remove JPEG artifacts from JPEG inputs
+      --dejpeg-all         with --dejpeg: process every input
+      --dejpeg-backend <B> auto, tensorrt-rtx, directml, webgpu or cpu (default auto)
       --keep-going         continue after errors
       --dry-run            list what would be converted
   -v, --verbose            per-file logging
@@ -86,3 +122,7 @@ The source code is MIT. A built binary is not: it statically links `heic`,
 `zenwebp` and `rav1d-safe` (AGPL-3.0, or commercial from Imazen) and
 `jpegxl-sys` (GPL-3.0, bundling BSD-licensed libjxl), so distributing a
 binary means following AGPL-3.0 terms.
+
+`--dejpeg` downloads ONNX Runtime (MIT), the DeJPEGNet v2 model (Apache-2.0) and,
+when those backends are used, DirectML and NVIDIA TensorRT RTX under their own
+licenses, from their publishers at run time. None of them are part of the binary.

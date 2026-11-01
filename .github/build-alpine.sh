@@ -2,7 +2,8 @@
 # Builds a fully static musl binary for the host architecture inside Alpine,
 # runs the tests there and checks that the binary has no dynamic loader.
 # Docker's seccomp profile blocks io_uring, so the tests also cover the
-# polling fallback. Usage: build-alpine.sh TARGET
+# polling fallback. A static binary cannot load ONNX Runtime, so the default
+# `ai` feature is left out. Usage: build-alpine.sh TARGET
 set -euo pipefail
 
 # rust:1.99.1-alpine3.24, pinned by digest.
@@ -12,8 +13,8 @@ target=$1
 docker run --rm -v "$PWD:/src" -w /src -e TARGET="$target" \
     -e RUSTFLAGS="-C target-feature=+crt-static" "$IMAGE" sh -euc '
         apk add --no-cache build-base cmake linux-headers
-        cargo build --release --locked --target "$TARGET"
-        cargo test --release --locked --target "$TARGET"'
+        cargo build --release --locked --no-default-features --target "$TARGET"
+        cargo test --release --locked --no-default-features --target "$TARGET"'
 sudo chown -R "$(id -u):$(id -g)" target
 
 bin="target/$target/release/jxlall"

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::ai::backend::BackendChoice;
+use crate::ai::dejpeg::DejpegOptions;
 use crate::encode::{Distance, Effort, EncodeSettings, NoiseStrength};
 
 #[derive(Parser, Debug)]
@@ -69,6 +71,21 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_NOISE_STRENGTH)]
     noise_strength: f32,
 
+    /// Remove JPEG artifacts from JPEG inputs with the DeJPEGNet v2 model.
+    /// ONNX Runtime, a GPU backend and the model are downloaded on first use.
+    /// Other settings are unchanged, so with the default -d 0 restored images
+    /// are stored losslessly.
+    #[arg(long)]
+    dejpeg: bool,
+
+    /// With --dejpeg: process every input, not only JPEGs.
+    #[arg(long)]
+    dejpeg_all: bool,
+
+    /// Backend for --dejpeg.
+    #[arg(long, value_enum, default_value_t = BackendChoice::Auto)]
+    dejpeg_backend: BackendChoice,
+
     /// Verbose per-file logging.
     #[arg(short, long)]
     verbose: bool,
@@ -100,6 +117,7 @@ pub struct RunOptions {
     pub recursive: bool,
     pub pattern: String,
     pub delete_originals: bool,
+    pub dejpeg: Option<DejpegOptions>,
     pub verbose: bool,
 }
 
@@ -117,9 +135,17 @@ pub fn parse() -> Result<RunOptions, String> {
     }
     if args.add_noise && distance.is_lossless() {
         eprintln!("note: --add-noise needs lossy encoding (-d > 0); no grain will be added");
-    } else if args.add_noise && !args.force_lossy_jpeg {
+    } else if args.add_noise && !args.force_lossy_jpeg && !args.dejpeg {
         eprintln!(
             "note: JPEGs recompressed losslessly get no grain; add --force-lossy-jpeg for them"
+        );
+    }
+    if !args.dejpeg && (args.dejpeg_all || args.dejpeg_backend != BackendChoice::Auto) {
+        eprintln!("warning: --dejpeg-all and --dejpeg-backend have no effect without --dejpeg");
+    }
+    if args.dejpeg && args.delete_originals {
+        eprintln!(
+            "warning: --dejpeg with --delete-originals: the original JPEGs cannot be restored from the output"
         );
     }
     if args.jobs.is_some_and(|j| j > MAX_JOBS) {
@@ -140,6 +166,44 @@ pub fn parse() -> Result<RunOptions, String> {
         recursive: args.recursive,
         pattern: args.pattern,
         delete_originals: args.delete_originals,
+        dejpeg: args.dejpeg.then_some(DejpegOptions {
+            all: args.dejpeg_all,
+            backend: args.dejpeg_backend,
+        }),
         verbose: args.verbose,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(extra: &[&str]) -> Args {
+        Args::try_parse_from(["jxlall", "in.jpg"].iter().chain(extra)).unwrap()
+    }
+
+    #[test]
+    fn dejpeg_is_off_by_default_and_backend_defaults_to_auto() {
+        let parsed = args(&[]);
+        assert!(!parsed.dejpeg && !parsed.dejpeg_all);
+        assert_eq!(parsed.dejpeg_backend, BackendChoice::Auto);
+    }
+
+    #[test]
+    fn backend_names_parse() {
+        for (name, want) in [
+            ("auto", BackendChoice::Auto),
+            ("tensorrt-rtx", BackendChoice::TensorrtRtx),
+            ("directml", BackendChoice::Directml),
+            ("webgpu", BackendChoice::Webgpu),
+            ("cpu", BackendChoice::Cpu),
+        ] {
+            assert_eq!(args(&["--dejpeg-backend", name]).dejpeg_backend, want);
+        }
+    }
+
+    #[test]
+    fn dejpeg_leaves_distance_alone() {
+        assert_eq!(args(&["--dejpeg"]).distance, 0.0);
+    }
 }

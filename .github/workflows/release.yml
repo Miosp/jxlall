@@ -46,7 +46,8 @@ jobs:
           # Static musl builds run natively inside Alpine.
           - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04, alpine: true }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, alpine: true }
-          - { target: x86_64-apple-darwin, os: macos-26-intel }
+          # ONNX Runtime has no x86_64 macOS (nor musl) build: no --dejpeg there.
+          - { target: x86_64-apple-darwin, os: macos-26-intel, cargo_flags: --no-default-features }
           - { target: aarch64-apple-darwin, os: macos-26 }
           - { target: x86_64-pc-windows-msvc, os: windows-2025 }
           - { target: aarch64-pc-windows-msvc, os: windows-11-arm }
@@ -57,6 +58,7 @@ jobs:
       attestations: write
     env:
       TARGET: ${{ matrix.target }}
+      CARGO_FLAGS: ${{ matrix.cargo_flags }}
       ARCHIVE: jxlall-${{ needs.version.outputs.version }}-${{ matrix.target }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
@@ -77,7 +79,7 @@ jobs:
           if [[ $TARGET == *windows* ]]; then
             export RUSTFLAGS="-C target-feature=+crt-static"
           fi
-          cargo build --release --locked --target "$TARGET"
+          cargo build --release --locked --target "$TARGET" $CARGO_FLAGS
 
       - name: Build (Alpine)
         if: ${{ matrix.alpine }}
