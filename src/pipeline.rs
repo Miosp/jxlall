@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use compio::io::AsyncWriteAtExt;
 
 use crate::ai::dejpeg::Restorer;
+use crate::ai::iqa::Rater;
 use crate::cli::RunOptions;
-use crate::domain::{Decoded, DecodedImage};
+use crate::domain::{Decoded, DecodedImage, Rating};
 use crate::encode::{EncodeError, EncodeSettings, NoiseStrength};
 use crate::inputs::InputFile;
 use crate::sniff::Format;
@@ -63,11 +64,13 @@ fn claim_key(path: &Path) -> PathBuf {
 /// Returns `Err` only when the async driver itself cannot start; per-file
 /// failures are counted in `stats`.
 /// `restorer`: remove JPEG artifacts from the pages it selects.
+/// `rater`: score each image and store the rating in its XMP.
 pub fn run(
     opts: RunOptions,
     files: Vec<InputFile>,
     stats: Arc<Stats>,
     restorer: Option<Arc<Restorer>>,
+    rater: Option<Arc<Rater>>,
 ) -> Result<(), String> {
     let jobs = opts.jobs;
     let keep_going = opts.keep_going;
@@ -94,6 +97,7 @@ pub fn run(
                 opts: Arc::clone(&opts),
                 stats: Arc::clone(&stats),
                 restorer: restorer.clone(),
+                rater: rater.clone(),
                 claimed: Rc::clone(&claimed),
                 total,
             }
@@ -147,6 +151,7 @@ struct Task {
     opts: Arc<RunOptions>,
     stats: Arc<Stats>,
     restorer: Option<Arc<Restorer>>,
+    rater: Option<Arc<Rater>>,
     claimed: Claimed,
     total: usize,
 }
@@ -160,11 +165,12 @@ impl Task {
             opts,
             stats,
             restorer,
+            rater,
             claimed,
             total,
         } = self;
         let verbose = opts.verbose;
-        let result = convert_file(&path, &name, &dst, &claimed, &opts, restorer, verbose).await;
+        let result = convert_file(&path, &name, &dst, &claimed, &opts, restorer, rater).await;
         match result {
             Ok((n_in, n_out, written)) => {
                 // Last line of defence: never remove a source that is the
@@ -234,8 +240,9 @@ async fn convert_file(
     claimed: &Claimed,
     opts: &RunOptions,
     restorer: Option<Arc<Restorer>>,
-    verbose: bool,
+    rater: Option<Arc<Rater>>,
 ) -> Result<(u64, u64, Vec<PathBuf>), String> {
+    let verbose = opts.verbose;
     let force_lossy_jpeg = opts.force_lossy_jpeg;
     let settings = &opts.settings;
     let data = compio::fs::read(path)
@@ -256,14 +263,14 @@ async fn convert_file(
         let path = path.to_path_buf();
         let settings = *settings;
         compio::runtime::spawn_blocking(move || {
-            encode_all(
-                &data,
-                format,
-                force_lossy_jpeg,
-                &settings,
-                &path,
-                restorer.as_deref(),
-            )
+            let ctx = FileContext {
+                settings: &settings,
+                path: &path,
+                restorer: restorer.as_deref(),
+                rater: rater.as_deref(),
+                verbose,
+            };
+            encode_all(&data, format, force_lossy_jpeg, &ctx)
         })
         .await
         .map_err(|e| format!("worker: {e}"))??
@@ -278,41 +285,32 @@ async fn convert_file(
     Ok((n_in, n_out, written))
 }
 
+/// Per-file inputs shared by the encode helpers.
+struct FileContext<'a> {
+    settings: &'a EncodeSettings,
+    path: &'a Path,
+    restorer: Option<&'a Restorer>,
+    rater: Option<&'a Rater>,
+    verbose: bool,
+}
+
 fn encode_all(
     data: &Arc<Vec<u8>>,
     format: Format,
     force_lossy_jpeg: bool,
-    settings: &EncodeSettings,
-    path: &Path,
-    restorer: Option<&Restorer>,
+    ctx: &FileContext,
 ) -> Result<Vec<Vec<u8>>, String> {
     let decoded = crate::decode::decode(data, format)?;
     let mut out = Vec::with_capacity(decoded.len());
     for d in decoded {
-        let d = match restorer {
-            Some(restorer) => restore_page(d, restorer, path)?,
+        let d = match ctx.restorer {
+            Some(restorer) => restore_page(d, restorer, ctx.path)?,
             None => d,
         };
         let jxl = match d {
-            Decoded::Jpeg(jpeg) => {
-                if force_lossy_jpeg {
-                    encode_pixel_from_jpeg(&jpeg, settings, path)?
-                } else {
-                    match crate::encode::encode_jpeg(&jpeg, settings) {
-                        Ok(jxl) => jxl,
-                        Err(e) => {
-                            // jbrd cannot represent this JPEG (CMYK,
-                            // arithmetic, ...): fall back to pixels.
-                            eprintln!(
-                                "note: {}: jbrd rejected ({e}); re-encoding pixels",
-                                path.display()
-                            );
-                            encode_pixel_from_jpeg(&jpeg, settings, path)?
-                        }
-                    }
-                }
-            }
-            Decoded::Image(img) => encode_decoded_image(*img, settings, path)?,
+            Decoded::Jpeg(jpeg) if force_lossy_jpeg => encode_pixel_from_jpeg(&jpeg, ctx)?,
+            Decoded::Jpeg(jpeg) => encode_jpeg(&jpeg, ctx)?,
+            Decoded::Image(img) => encode_decoded_image(*img, ctx)?,
         };
         out.push(jxl);
     }
@@ -347,11 +345,77 @@ fn restore_page(page: Decoded, restorer: &Restorer, path: &Path) -> Result<Decod
     Ok(Decoded::Image(img))
 }
 
-fn encode_decoded_image(
+/// jbrd recompression, falling back to pixels for JPEGs jbrd cannot
+/// represent (CMYK, arithmetic, ...). Rating needs a pixel decode just for
+/// scoring; the fallback reuses the rating instead of scoring again.
+fn encode_jpeg(jpeg: &[u8], ctx: &FileContext) -> Result<Vec<u8>, String> {
+    let rating = match ctx.rater {
+        Some(_) => rate(ctx, &decode_jpeg_pixels(jpeg)?)?,
+        None => None,
+    };
+    match encode_jbrd(jpeg, ctx, rating.as_ref()) {
+        Ok(jxl) => Ok(jxl),
+        Err(e) => {
+            eprintln!(
+                "note: {}: jbrd rejected ({e}); re-encoding pixels",
+                ctx.path.display()
+            );
+            encode_pixels(decode_jpeg_pixels(jpeg)?, ctx, rating)
+        }
+    }
+}
+
+/// A JPEG with XMP gets the rating edited into it at the same length
+/// (reconstruction records the packet size), so the restored JPEG carries
+/// it; without XMP an extra `xml ` box keeps the restored JPEG byte-exact.
+fn encode_jbrd(
+    jpeg: &[u8],
+    ctx: &FileContext,
+    rating: Option<&Rating>,
+) -> Result<Vec<u8>, EncodeError> {
+    let Some(rating) = rating else {
+        return crate::encode::encode_jpeg(jpeg, ctx.settings, None);
+    };
+    let Some(range) = crate::format::jpeg_markers::scan_segments(jpeg).xmp_packet else {
+        let xmp = crate::format::xmp_rating::new_packet(rating);
+        return crate::encode::encode_jpeg(jpeg, ctx.settings, Some(&xmp));
+    };
+    match crate::format::xmp_rating::apply_same_length(&jpeg[range.clone()], rating) {
+        Ok(packet) => {
+            let mut edited = jpeg.to_vec();
+            edited[range].copy_from_slice(&packet);
+            crate::encode::encode_jpeg(&edited, ctx.settings, None)
+        }
+        Err(e) => {
+            eprintln!("note: {}: rating not stored ({e})", ctx.path.display());
+            crate::encode::encode_jpeg(jpeg, ctx.settings, None)
+        }
+    }
+}
+
+/// `None` without `--iqa`. A failed score fails the file and keeps its source:
+/// a library silently left unrated could not be rated again after
+/// `--delete-originals`.
+fn rate(ctx: &FileContext, img: &DecodedImage) -> Result<Option<Rating>, String> {
+    let Some(rater) = ctx.rater else {
+        return Ok(None);
+    };
+    let rating = rater.rate(&img.frame, img.orientation)?;
+    log_rating(ctx, &rating);
+    Ok(Some(rating))
+}
+
+fn encode_decoded_image(img: DecodedImage, ctx: &FileContext) -> Result<Vec<u8>, String> {
+    let rating = rate(ctx, &img)?;
+    encode_pixels(img, ctx, rating)
+}
+
+fn encode_pixels(
     img: DecodedImage,
-    settings: &EncodeSettings,
-    path: &Path,
+    ctx: &FileContext,
+    rating: Option<Rating>,
 ) -> Result<Vec<u8>, String> {
+    let settings = ctx.settings;
     // Consumed by value: metadata boxes and pixels move through, no clone.
     let DecodedImage {
         frame,
@@ -364,15 +428,40 @@ fn encode_decoded_image(
     if let Some(gm) = gain_map.as_ref() {
         meta.jhgm = Some(gm.to_jhgm(settings).map_err(gain_map_err)?);
     }
+    if let Some(rating) = rating {
+        let xmp = match meta.xmp.as_deref() {
+            Some(xmp) => crate::format::xmp_rating::apply(xmp, &rating),
+            None => Ok(crate::format::xmp_rating::new_packet(&rating)),
+        };
+        match xmp {
+            Ok(xmp) => meta.xmp = Some(Arc::new(xmp)),
+            Err(e) => eprintln!("note: {}: rating not stored ({e})", ctx.path.display()),
+        }
+    }
     // Only lossy pixel frames get grain (see encode_image); cli notes once.
     let iso = settings
         .noise
         .filter(|_| !settings.distance.is_lossless())
         .and_then(|strength| {
-            photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), strength, path)
+            photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), strength, ctx.path)
         });
     crate::encode::encode_image(&frame, &color, &meta, orientation, &hdr, settings, iso)
         .map_err(|e| e.to_string())
+}
+
+fn log_rating(ctx: &FileContext, rating: &Rating) {
+    if ctx.verbose {
+        let stars = rating
+            .stars
+            .map(|s| format!(", {s} stars"))
+            .unwrap_or_default();
+        eprintln!(
+            "rated {}: technical {:.4}, aesthetic {:.4}{stars}",
+            ctx.path.display(),
+            rating.technical.value,
+            rating.aesthetic.value
+        );
+    }
 }
 
 /// libjxl photon-noise ISO for one file: full-frame-equivalent EXIF ISO
@@ -400,13 +489,13 @@ fn gain_map_err(e: EncodeError) -> String {
 }
 
 /// Forced-lossy JPEG: pixel decode (zune-jpeg) then VarDCT encode.
-fn encode_pixel_from_jpeg(
-    jpeg: &[u8],
-    settings: &EncodeSettings,
-    path: &Path,
-) -> Result<Vec<u8>, String> {
+fn encode_pixel_from_jpeg(jpeg: &[u8], ctx: &FileContext) -> Result<Vec<u8>, String> {
+    encode_decoded_image(decode_jpeg_pixels(jpeg)?, ctx)
+}
+
+fn decode_jpeg_pixels(jpeg: &[u8]) -> Result<DecodedImage, String> {
     match crate::format::jpeg::decode(jpeg)? {
-        Decoded::Image(img) => encode_decoded_image(*img, settings, path),
+        Decoded::Image(img) => Ok(*img),
         Decoded::Jpeg(_) => Err("internal: jpeg pixel decode returned passthrough".into()),
     }
 }

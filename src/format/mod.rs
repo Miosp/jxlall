@@ -10,3 +10,4 @@ pub mod tiff;
 pub mod tiff_exif;
 pub mod webp;
 pub mod xmp_extended;
+pub mod xmp_rating;

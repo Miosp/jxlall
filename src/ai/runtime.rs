@@ -1,18 +1,23 @@
 //! ONNX Runtime side: the core is loaded once from the cache, backends are tried
 //! in order, each model gets one session.
 
+use std::collections::HashSet;
 use std::env::consts::{ARCH, OS};
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use ort::environment::Environment;
-use ort::session::Session;
+use ort::session::{Session, SessionInputValue};
 use ort::value::TensorRef;
 
 use super::artifacts::{self, DIRECTML_DLL, Plugin, Remote};
 use super::backend::{self, Backend, BackendChoice};
-use super::fetch;
-use super::tiling::CHANNELS;
+use super::{Input, TensorData, fetch};
+
+/// Path of a verified auxiliary file, downloading it when needed.
+pub fn ensure_file(spec: &Remote) -> Result<PathBuf, String> {
+    fetch::ensure(spec)
+}
 
 /// One loaded model on the backend that accepted it.
 pub struct Model {
@@ -24,8 +29,9 @@ impl Model {
     /// Load `spec` on the first working backend for `choice`. `validate` runs
     /// on each candidate, so a backend that loads but cannot run the model is
     /// rejected up front. An explicit backend that fails is an error; `auto`
-    /// moves on with a note.
+    /// moves on with a note. `label` names the model in those messages.
     pub fn load(
+        label: &str,
         spec: &'static Remote,
         choice: BackendChoice,
         validate: impl Fn(&mut Self) -> Result<(), String>,
@@ -40,12 +46,12 @@ impl Model {
             let result = candidate.and_then(|mut model| validate(&mut model).map(|()| model));
             match result {
                 Ok(model) => {
-                    eprintln!("using {} backend", backend.name());
+                    eprintln!("{label}: using {} backend", backend.name());
                     return Ok(model);
                 }
                 Err(e) => {
                     if choice == BackendChoice::Auto {
-                        eprintln!("note: {} backend unavailable: {e}", backend.name());
+                        eprintln!("note: {label}: {} backend unavailable: {e}", backend.name());
                     }
                     last_error = format!("{} backend: {e}", backend.name());
                 }
@@ -58,17 +64,23 @@ impl Model {
         self.backend
     }
 
-    /// One forward pass on a single square RGB image in CHW layout.
-    pub fn run_rgb(
-        &mut self,
-        input: &'static str,
-        output: &'static str,
-        data: &[f32],
-        size: usize,
-    ) -> Result<Vec<f32>, String> {
+    /// One forward pass; returns the named float output.
+    pub fn run(&mut self, inputs: &[Input], output: &'static str) -> Result<Vec<f32>, String> {
         let mut run = || -> ort::Result<Vec<f32>> {
-            let tensor = TensorRef::from_array_view(([1usize, CHANNELS, size, size], data))?;
-            let outputs = self.session.run(ort::inputs![input => tensor])?;
+            let mut feed: Vec<(&str, SessionInputValue)> = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                let shape = input.shape.clone();
+                let value = match input.data {
+                    TensorData::F32(data) => TensorRef::from_array_view((shape, data))?.into(),
+                    TensorData::I64(data) => TensorRef::from_array_view((shape, data))?.into(),
+                };
+                feed.push((input.name, value));
+            }
+            // One inference at a time across all models: GPU backends keep
+            // shared state per device, and each run already uses every CPU core.
+            static RUN_TURN: Mutex<()> = Mutex::new(());
+            let _turn = RUN_TURN.lock().unwrap_or_else(PoisonError::into_inner);
+            let outputs = self.session.run(feed)?;
             let (_, values) = outputs[output].try_extract_tensor::<f32>()?;
             Ok(values.to_vec())
         };
@@ -126,8 +138,7 @@ fn open_plugin(env: &Environment, model: &Path, plugin: &Plugin) -> Result<Sessi
     for name in plugin.preload {
         preload(&dir.join(name))?;
     }
-    env.register_ep_library(plugin.ep_name, dir.join(plugin.library))
-        .map_err(|e| e.to_string())?;
+    register_once(env, plugin, &dir)?;
     let ep_devices = || {
         env.devices()
             .filter(|device| device.ep().is_ok_and(|ep| ep == plugin.ep_name))
@@ -141,6 +152,19 @@ fn open_plugin(env: &Environment, model: &Path, plugin: &Plugin) -> Result<Sessi
             .commit_from_file(model)
     };
     session().map_err(|e| e.to_string())
+}
+
+/// Each model opens its own session, but a plugin registers once per process.
+fn register_once(env: &Environment, plugin: &Plugin, dir: &Path) -> Result<(), String> {
+    static REGISTERED: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
+    let registered = registered.get_or_insert_default();
+    if !registered.contains(plugin.ep_name) {
+        env.register_ep_library(plugin.ep_name, dir.join(plugin.library))
+            .map_err(|e| e.to_string())?;
+        registered.insert(plugin.ep_name);
+    }
+    Ok(())
 }
 
 /// Load a library by absolute path and keep it loaded, so dependents resolve to

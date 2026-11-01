@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ai::dejpeg::Restorer;
+use ai::iqa::Rater;
 use stats::{Bytes, Stats};
 
 fn main() -> ExitCode {
@@ -43,8 +44,17 @@ fn main() -> ExitCode {
         };
     }
 
-    let restorer = match opts.dejpeg.map(Restorer::load).transpose() {
+    let backend = opts.ai_backend;
+    let load_error = |e: String| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    };
+    let restorer = match opts.dejpeg.map(|o| Restorer::load(o, backend)).transpose() {
         Ok(restorer) => restorer.map(Arc::new),
+        Err(e) => return load_error(e),
+    };
+    let rater = match opts.iqa.map(|o| Rater::load(o, backend)).transpose() {
+        Ok(rater) => rater.map(Arc::new),
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
@@ -53,7 +63,7 @@ fn main() -> ExitCode {
 
     let total = files.len() as u64;
     let stats = Arc::new(Stats::default());
-    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats), restorer) {
+    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats), restorer, rater) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }

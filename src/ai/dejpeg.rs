@@ -8,6 +8,7 @@ use super::artifacts::DEJPEG_V2;
 use super::backend::{Backend, BackendChoice};
 use super::runtime::Model;
 use super::tiling::{Blender, CHANNELS, Tile, TilePlan, mirror};
+use super::{Input, TensorData};
 use crate::domain::{Decoded, DecodedImage, ImageFrame, Pixels};
 
 const MIN_TILE: usize = 64;
@@ -26,7 +27,6 @@ const MODEL_OUTPUT: &str = "output";
 pub struct DejpegOptions {
     /// Restore every input, not only JPEGs.
     pub all: bool,
-    pub backend: BackendChoice,
 }
 
 /// The loaded model, shared by all conversions.
@@ -43,12 +43,10 @@ struct Engine {
 }
 
 impl Restorer {
-    pub fn load(options: DejpegOptions) -> Result<Self, String> {
-        let model = Model::load(&DEJPEG_V2, options.backend, |model| {
+    pub fn load(options: DejpegOptions, backend: BackendChoice) -> Result<Self, String> {
+        let model = Model::load("dejpeg", &DEJPEG_V2, backend, |model| {
             let probe = vec![0.0; CHANNELS * PROBE_TILE * PROBE_TILE];
-            model
-                .run_rgb(MODEL_INPUT, MODEL_OUTPUT, &probe, PROBE_TILE)
-                .map(|_| ())
+            run_tile(model, &probe, PROBE_TILE).map(|_| ())
         })?;
         let tile = if model.backend() == Backend::Cpu {
             CPU_TILE
@@ -74,9 +72,18 @@ impl Restorer {
         let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
         let Engine { model, tile } = &mut *engine;
         restore_with_fallback(&mut img.frame, tile, &mut |input, size| {
-            model.run_rgb(MODEL_INPUT, MODEL_OUTPUT, input, size)
+            run_tile(model, input, size)
         })
     }
+}
+
+fn run_tile(model: &mut Model, tile: &[f32], size: usize) -> Result<Vec<f32>, String> {
+    let input = Input {
+        name: MODEL_INPUT,
+        shape: vec![1, CHANNELS, size, size],
+        data: TensorData::F32(tile),
+    };
+    model.run(&[input], MODEL_OUTPUT)
 }
 
 /// Whether a decoded page goes through the model. JPEGs always do; everything
@@ -468,11 +475,7 @@ mod tests {
             Pixels::U8(v) => psnr(reference, v),
             _ => panic!("8-bit JPEG expected"),
         };
-        let restorer = Restorer::load(DejpegOptions {
-            all: false,
-            backend: BackendChoice::Cpu,
-        })
-        .unwrap();
+        let restorer = Restorer::load(DejpegOptions { all: false }, BackendChoice::Cpu).unwrap();
         restorer.restore(&mut degraded, Path::new("test")).unwrap();
         let after = match &degraded.frame.pixels {
             Pixels::U8(v) => psnr(reference, v),

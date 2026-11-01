@@ -6,6 +6,8 @@ use clap::Parser;
 
 use crate::ai::backend::BackendChoice;
 use crate::ai::dejpeg::DejpegOptions;
+use crate::ai::iqa::{AestheticModel, IqaOptions, TechnicalModel};
+use crate::domain::StarThresholds;
 use crate::encode::{Distance, Effort, EncodeSettings, NoiseStrength};
 
 #[derive(Parser, Debug)]
@@ -71,6 +73,29 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_NOISE_STRENGTH)]
     noise_strength: f32,
 
+    /// Rate each image and store a technical (detail) and an aesthetic
+    /// (composition) score, each 0..1, in XMP. Models (about 90 MB each)
+    /// are downloaded once to the user cache.
+    #[arg(long)]
+    iqa: bool,
+
+    /// Model for the technical score [default: spaq].
+    #[arg(long, value_enum)]
+    iqa_technical: Option<TechnicalModel>,
+
+    /// Model for the aesthetic score [default: para].
+    #[arg(long, value_enum)]
+    iqa_aesthetic: Option<AestheticModel>,
+
+    /// Also write `xmp:Rating` stars from the mean of both scores: minimum
+    /// values for 2, 3, 4 and 5 stars, comma-separated (lower gets 1 star).
+    #[arg(long, value_delimiter = ',')]
+    iqa_stars: Option<Vec<f32>>,
+
+    /// Replace a star rating the source already has.
+    #[arg(long)]
+    overwrite_rating: bool,
+
     /// Remove JPEG artifacts from JPEG inputs with the DeJPEGNet v2 model.
     /// ONNX Runtime, a GPU backend and the model are downloaded on first use.
     /// Other settings are unchanged, so with the default -d 0 restored images
@@ -82,9 +107,10 @@ struct Args {
     #[arg(long)]
     dejpeg_all: bool,
 
-    /// Backend for --dejpeg.
+    /// Backend for --dejpeg and --iqa. `auto` prefers a GPU and falls back to
+    /// the CPU.
     #[arg(long, value_enum, default_value_t = BackendChoice::Auto)]
-    dejpeg_backend: BackendChoice,
+    ai_backend: BackendChoice,
 
     /// Verbose per-file logging.
     #[arg(short, long)]
@@ -117,7 +143,9 @@ pub struct RunOptions {
     pub recursive: bool,
     pub pattern: String,
     pub delete_originals: bool,
+    pub iqa: Option<IqaOptions>,
     pub dejpeg: Option<DejpegOptions>,
+    pub ai_backend: BackendChoice,
     pub verbose: bool,
 }
 
@@ -140,8 +168,18 @@ pub fn parse() -> Result<RunOptions, String> {
             "note: JPEGs recompressed losslessly get no grain; add --force-lossy-jpeg for them"
         );
     }
-    if !args.dejpeg && (args.dejpeg_all || args.dejpeg_backend != BackendChoice::Auto) {
-        eprintln!("warning: --dejpeg-all and --dejpeg-backend have no effect without --dejpeg");
+    let stars = args.iqa_stars.map(StarThresholds::try_from).transpose()?;
+    let iqa_extras = args.iqa_technical.is_some() || args.iqa_aesthetic.is_some();
+    if !args.iqa && (iqa_extras || stars.is_some() || args.overwrite_rating) {
+        eprintln!("warning: --iqa-* and --overwrite-rating options have no effect without --iqa");
+    } else if stars.is_none() && args.overwrite_rating {
+        eprintln!("warning: --overwrite-rating has no effect without --iqa-stars");
+    }
+    if !args.dejpeg && args.dejpeg_all {
+        eprintln!("warning: --dejpeg-all has no effect without --dejpeg");
+    }
+    if !args.dejpeg && !args.iqa && args.ai_backend != BackendChoice::Auto {
+        eprintln!("warning: --ai-backend has no effect without --dejpeg or --iqa");
     }
     if args.dejpeg && args.delete_originals {
         eprintln!(
@@ -168,7 +206,13 @@ pub fn parse() -> Result<RunOptions, String> {
         delete_originals: args.delete_originals,
         dejpeg: args.dejpeg.then_some(DejpegOptions {
             all: args.dejpeg_all,
-            backend: args.dejpeg_backend,
+        }),
+        ai_backend: args.ai_backend,
+        iqa: args.iqa.then(|| IqaOptions {
+            technical: args.iqa_technical.unwrap_or(TechnicalModel::Spaq),
+            aesthetic: args.iqa_aesthetic.unwrap_or(AestheticModel::Para),
+            stars,
+            overwrite_stars: args.overwrite_rating,
         }),
         verbose: args.verbose,
     })
@@ -186,7 +230,7 @@ mod tests {
     fn dejpeg_is_off_by_default_and_backend_defaults_to_auto() {
         let parsed = args(&[]);
         assert!(!parsed.dejpeg && !parsed.dejpeg_all);
-        assert_eq!(parsed.dejpeg_backend, BackendChoice::Auto);
+        assert_eq!(parsed.ai_backend, BackendChoice::Auto);
     }
 
     #[test]
@@ -198,8 +242,16 @@ mod tests {
             ("webgpu", BackendChoice::Webgpu),
             ("cpu", BackendChoice::Cpu),
         ] {
-            assert_eq!(args(&["--dejpeg-backend", name]).dejpeg_backend, want);
+            assert_eq!(args(&["--ai-backend", name]).ai_backend, want);
         }
+    }
+
+    #[test]
+    fn iqa_stars_stops_at_the_next_argument() {
+        let parsed =
+            Args::try_parse_from(["jxlall", "--iqa-stars", "0.2,0.4,0.6,0.8", "a.png"]).unwrap();
+        assert_eq!(parsed.iqa_stars.unwrap(), [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(parsed.inputs, [std::path::PathBuf::from("a.png")]);
     }
 
     #[test]

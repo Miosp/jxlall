@@ -26,7 +26,7 @@ impl Backend {
     }
 }
 
-/// `--dejpeg-backend` value.
+/// `--ai-backend` value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum BackendChoice {
     /// Best available: tries GPU backends, falls back to CPU.
