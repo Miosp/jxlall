@@ -16,6 +16,11 @@ allow = [
     "CC0-1.0",
     "GPL-3.0-or-later",
     "AGPL-3.0-only",
+    # The `ai` feature: rustls and libloading (ISC, CDLA-Permissive-2.0) and
+    # directories (MPL-2.0).
+    "ISC",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
 ]
 
 [bans]
