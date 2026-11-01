@@ -2,6 +2,8 @@
 //! models are downloaded on first use, pinned by content.
 
 #[allow(dead_code)]
+mod artifacts;
+#[allow(dead_code)]
 pub mod backend;
 #[allow(dead_code)]
 pub mod dejpeg;
