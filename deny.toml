@@ -16,8 +16,8 @@ allow = [
     "CC0-1.0",
     "GPL-3.0-or-later",
     "AGPL-3.0-only",
-    # The `ai` feature: rustls and libloading (ISC, CDLA-Permissive-2.0) and
-    # directories (MPL-2.0).
+    # The `ai` feature: ISC for libloading and rustls-webpki, CDLA-Permissive-2.0
+    # for webpki-roots, MPL-2.0 for option-ext.
     "ISC",
     "CDLA-Permissive-2.0",
     "MPL-2.0",

@@ -42,8 +42,14 @@ pub fn ensure(spec: &Remote) -> Result<PathBuf, String> {
     remove_stale_parts(&dir, spec.file_name);
     announce(spec.file_name, spec.size, &path);
     let tmp = part_path(&dir, spec.file_name);
-    let result = download(spec.url, spec.size, spec.sha256, &tmp)
-        .and_then(|()| std::fs::rename(&tmp, &path).map_err(|e| e.to_string()));
+    let result = download(spec.url, spec.size, spec.sha256, &tmp).and_then(|()| {
+        match std::fs::rename(&tmp, &path) {
+            Ok(()) => Ok(()),
+            // Windows: another run finished first and has the file open.
+            Err(_) if verify_file(&path, spec.size, spec.sha256).is_ok() => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    });
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -61,9 +67,11 @@ pub fn ensure_archive(spec: &Archive) -> Result<PathBuf, String> {
         return Ok(dir);
     }
     create_dir(&root)?;
+    let archive_name = format!("{}-archive", spec.id);
     remove_stale_parts(&root, spec.id);
+    remove_stale_parts(&root, &archive_name);
     announce(spec.id, spec.size, &dir);
-    let download_path = part_path(&root, &format!("{}-archive", spec.id));
+    let download_path = part_path(&root, &archive_name);
     let extract_dir = part_path(&root, spec.id);
     let result = install(spec, &download_path, &extract_dir, &dir);
     let _ = std::fs::remove_file(&download_path);
@@ -81,12 +89,20 @@ fn install(
     download(spec.url, spec.size, spec.sha256, download_path)?;
     std::fs::create_dir_all(extract_dir).map_err(|e| e.to_string())?;
     extract(download_path, spec.format, spec.files, extract_dir)?;
-    // A corrupt earlier install. A concurrent run may also have finished one,
-    // in which case its copy is as good as ours.
+    publish(extract_dir, dir, spec.files)
+}
+
+/// Move a finished extraction into place. A valid install is left alone: a
+/// concurrent run may have just finished it and be loading from it.
+fn publish(extract_dir: &Path, dir: &Path, files: &[ArchiveFile]) -> Result<(), String> {
+    if verify_installed(dir, files).is_ok() {
+        let _ = std::fs::remove_dir_all(extract_dir);
+        return Ok(());
+    }
     let _ = std::fs::remove_dir_all(dir);
     match std::fs::rename(extract_dir, dir) {
         Ok(()) => Ok(()),
-        Err(_) if verify_installed(dir, spec.files).is_ok() => Ok(()),
+        Err(_) if verify_installed(dir, files).is_ok() => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -350,6 +366,30 @@ mod tests {
             .is_err()
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn publish_keeps_a_valid_install_and_replaces_a_corrupt_one() {
+        let root = scratch("publish");
+        let (dir, staged) = (root.join("dir"), root.join("staged"));
+        let files = [abc_file("e", "lib")];
+        let stage = || {
+            std::fs::create_dir_all(&staged).unwrap();
+            std::fs::write(staged.join("lib"), b"abc").unwrap();
+        };
+        stage();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib"), b"abd").unwrap();
+        publish(&staged, &dir, &files).unwrap();
+        assert_eq!(std::fs::read(dir.join("lib")).unwrap(), b"abc");
+        assert!(!staged.exists());
+
+        // A concurrent run finished first and may be loading from its copy.
+        stage();
+        std::fs::write(dir.join("marker"), b"").unwrap();
+        publish(&staged, &dir, &files).unwrap();
+        assert!(dir.join("marker").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

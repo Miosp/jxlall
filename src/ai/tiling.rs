@@ -87,6 +87,15 @@ fn axis_weights(origin: usize, length: usize, size: usize, overlap: usize) -> Ve
         .collect()
 }
 
+fn zeroed(len: usize) -> Result<Vec<f32>, String> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(len)
+        .map_err(|e| format!("blend buffer: {e}"))?;
+    buffer.resize(len, 0.0);
+    Ok(buffer)
+}
+
 /// Accumulates tile outputs into one interleaved RGB image.
 pub struct Blender {
     width: usize,
@@ -96,13 +105,14 @@ pub struct Blender {
 }
 
 impl Blender {
-    pub fn new(width: usize, height: usize) -> Self {
-        Self {
+    /// An image too large for memory fails its file, not the whole run.
+    pub fn new(width: usize, height: usize) -> Result<Self, String> {
+        Ok(Self {
             width,
             height,
-            weighted: vec![0.0; width * height * CHANNELS],
-            weights: vec![0.0; width * height],
-        }
+            weighted: zeroed(width * height * CHANNELS)?,
+            weights: zeroed(width * height)?,
+        })
     }
 
     /// `output`: one tile in CHW layout.
@@ -183,7 +193,7 @@ mod tests {
             .map(|i| (i % 251) as f32 / 251.0)
             .collect();
         let plan = TilePlan::new(width, height, size);
-        let mut blender = Blender::new(width, height);
+        let mut blender = Blender::new(width, height).unwrap();
         let mut tile_chw = vec![0.0; CHANNELS * size * size];
         for &tile in &plan.tiles {
             for c in 0..CHANNELS {
@@ -222,9 +232,15 @@ mod tests {
     }
 
     #[test]
+    fn oversized_buffers_are_an_error_not_an_abort() {
+        const HUGE_SIDE: usize = 1 << 30;
+        assert!(Blender::new(HUGE_SIDE, HUGE_SIDE).is_err());
+    }
+
+    #[test]
     fn output_is_clamped_to_unit_range() {
         let plan = TilePlan::new(4, 4, 64);
-        let mut blender = Blender::new(4, 4);
+        let mut blender = Blender::new(4, 4).unwrap();
         blender.add(&plan, plan.tiles[0], &vec![2.0; CHANNELS * 64 * 64]);
         assert!(blender.finish().iter().all(|&v| v == 1.0));
     }

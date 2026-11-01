@@ -54,8 +54,9 @@ and premultiplied-alpha images, which are encoded unchanged with a note.
 Restored JPEGs are no longer recompressed losslessly, so the original JPEG cannot
 be recovered from the output. No other setting changes: with the default `-d 0`,
 restored images are stored losslessly and are usually much larger than the source,
-so you will normally want `-d 1` or similar. Metadata, color profiles, alpha and
-gain maps are kept.
+so you will normally want `-d 1` or similar. Metadata, color profiles and alpha are
+kept, as are HEIF and AVIF gain maps. JPEG gain maps (Ultra HDR) are dropped with a
+note.
 
 On first use jxlall downloads ONNX Runtime, a GPU backend and the model to the user
 cache. All of them are pinned by SHA-256 and checked on every run. **This means
@@ -122,5 +123,6 @@ The source code is MIT. A built binary is not: it statically links `heic`,
 `jpegxl-sys` (GPL-3.0, bundling BSD-licensed libjxl), so distributing a
 binary means following AGPL-3.0 terms.
 
-`--dejpeg` downloads ONNX Runtime (MIT) and the DeJPEGNet v2 model (Apache-2.0)
-from their publishers at run time, so they are not part of the binary.
+`--dejpeg` downloads ONNX Runtime (MIT), the DeJPEGNet v2 model (Apache-2.0) and,
+when those backends are used, DirectML and NVIDIA TensorRT RTX under their own
+licenses, from their publishers at run time. None of them are part of the binary.

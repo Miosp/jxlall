@@ -327,7 +327,16 @@ fn restore_page(page: Decoded, restorer: &Restorer, path: &Path) -> Result<Decod
     }
     let mut img = match page {
         Decoded::Jpeg(jpeg) => match crate::format::jpeg::decode(&jpeg)? {
-            Decoded::Image(img) => img,
+            Decoded::Image(img) => {
+                let xmp = img.meta.xmp.as_deref();
+                if xmp.is_some_and(|x| crate::ai::dejpeg::xmp_declares_gain_map(x)) {
+                    eprintln!(
+                        "note: {}: gain map dropped, --dejpeg keeps only the base image",
+                        path.display()
+                    );
+                }
+                img
+            }
             Decoded::Jpeg(_) => {
                 return Err("internal: jpeg pixel decode returned passthrough".into());
             }

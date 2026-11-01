@@ -85,6 +85,14 @@ pub fn selects(page: &Decoded, all: bool) -> bool {
     all || matches!(page, Decoded::Jpeg(_))
 }
 
+/// Ultra HDR JPEGs announce their gain map in XMP. JPEG pixel decoding does not
+/// carry it over, so leaving the lossless path loses it.
+pub fn xmp_declares_gain_map(xmp: &[u8]) -> bool {
+    const GAIN_MAP_NAMESPACE_PREFIX: &[u8] = b"hdrgm:";
+    xmp.windows(GAIN_MAP_NAMESPACE_PREFIX.len())
+        .any(|w| w == GAIN_MAP_NAMESPACE_PREFIX)
+}
+
 /// Why a page cannot be restored. The model works on SDR samples in 0..=1.
 pub fn ineligible_reason(img: &DecodedImage) -> Option<&'static str> {
     if matches!(img.frame.pixels, Pixels::F32(_)) {
@@ -106,8 +114,11 @@ pub fn restore_with_fallback(
     tile: &mut usize,
     infer: &mut impl FnMut(&[f32], usize) -> Result<Vec<f32>, String>,
 ) -> Result<(), String> {
+    let (width, height) = (frame.width as usize, frame.height as usize);
     loop {
-        match restore_frame(frame, *tile, infer) {
+        // Outside the retry: these buffers do not shrink with the tile.
+        let blender = Blender::new(width, height)?;
+        match restore_frame(frame, *tile, blender, infer) {
             Ok(()) => return Ok(()),
             Err(e) if *tile <= MIN_TILE => return Err(e),
             Err(e) => {
@@ -124,11 +135,10 @@ pub fn restore_with_fallback(
 fn restore_frame(
     frame: &mut ImageFrame,
     size: usize,
+    mut blender: Blender,
     infer: &mut impl FnMut(&[f32], usize) -> Result<Vec<f32>, String>,
 ) -> Result<(), String> {
-    let (width, height) = (frame.width as usize, frame.height as usize);
-    let plan = TilePlan::new(width, height, size);
-    let mut blender = Blender::new(width, height);
+    let plan = TilePlan::new(frame.width as usize, frame.height as usize, size);
     let mut input = vec![0.0; CHANNELS * size * size];
     for &tile in &plan.tiles {
         fill_tile(frame, &plan, tile, &mut input)?;
@@ -262,6 +272,15 @@ mod tests {
         )
     }
 
+    fn restore_fresh(
+        frame: &mut ImageFrame,
+        size: usize,
+        infer: &mut impl FnMut(&[f32], usize) -> Result<Vec<f32>, String>,
+    ) -> Result<(), String> {
+        let blender = Blender::new(frame.width as usize, frame.height as usize).unwrap();
+        restore_frame(frame, size, blender, infer)
+    }
+
     /// Returns the input unchanged.
     fn identity(input: &[f32], _size: usize) -> Result<Vec<f32>, String> {
         Ok(input.to_vec())
@@ -284,6 +303,12 @@ mod tests {
     }
 
     #[test]
+    fn gain_map_is_recognized_from_xmp() {
+        assert!(xmp_declares_gain_map(b"<x hdrgm:Version=\"1.0\"/>"));
+        assert!(!xmp_declares_gain_map(b"<x xmp:Rating=\"3\"/>"));
+    }
+
+    #[test]
     fn float_hdr_and_premultiplied_are_ineligible() {
         let plain = || frame(Pixels::U8(vec![0; 3]), 8, false, 1, 1);
         assert_eq!(ineligible_reason(&image(plain())), None);
@@ -300,7 +325,7 @@ mod tests {
     fn identity_keeps_u8_pixels_and_alpha() {
         let pixels: Vec<u8> = (0..4 * 80 * 70).map(|i| (i % 255) as u8).collect();
         let mut f = frame(Pixels::U8(pixels.clone()), 8, true, 80, 70);
-        restore_frame(&mut f, 64, &mut identity).unwrap();
+        restore_fresh(&mut f, 64, &mut identity).unwrap();
         let Pixels::U8(out) = &f.pixels else {
             panic!("storage type changed");
         };
@@ -316,7 +341,7 @@ mod tests {
                 .map(|i| ((i * 37 % (max + 1)) << shift) as u16)
                 .collect();
             let mut f = frame(Pixels::U16(pixels.clone()), depth, false, 80, 70);
-            restore_frame(&mut f, 64, &mut identity).unwrap();
+            restore_fresh(&mut f, 64, &mut identity).unwrap();
             let Pixels::U16(out) = &f.pixels else {
                 panic!("storage type changed");
             };
@@ -332,7 +357,7 @@ mod tests {
             out[..size * size].iter_mut().for_each(|v| *v = 0.9);
             Ok(out)
         };
-        restore_frame(&mut f, 64, &mut tint).unwrap();
+        restore_fresh(&mut f, 64, &mut tint).unwrap();
         let Pixels::U8(out) = &f.pixels else {
             panic!("storage type changed");
         };
@@ -354,7 +379,7 @@ mod tests {
             out[..size * size].iter_mut().for_each(|v| *v = 0.9);
             Ok(out)
         };
-        restore_frame(&mut f, 64, &mut tint).unwrap();
+        restore_fresh(&mut f, 64, &mut tint).unwrap();
         let Pixels::U8(out) = &f.pixels else {
             panic!("storage type changed");
         };
@@ -365,9 +390,9 @@ mod tests {
     fn non_finite_or_short_output_is_an_error() {
         let mut f = frame(Pixels::U8(vec![1; 3 * 8 * 8]), 8, false, 8, 8);
         let mut nan = |input: &[f32], _: usize| Ok(vec![f32::NAN; input.len()]);
-        assert!(restore_frame(&mut f, 64, &mut nan).is_err());
+        assert!(restore_fresh(&mut f, 64, &mut nan).is_err());
         let mut short = |_: &[f32], _: usize| Ok(vec![0.0; 3]);
-        assert!(restore_frame(&mut f, 64, &mut short).is_err());
+        assert!(restore_fresh(&mut f, 64, &mut short).is_err());
     }
 
     #[test]
