@@ -1,5 +1,6 @@
 //! CLI entry: discover inputs, convert to JXL, print summary.
 
+mod ai;
 mod cli;
 mod decode;
 mod domain;
