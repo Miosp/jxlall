@@ -109,16 +109,16 @@ fn open(env: &Environment, model: &Path, backend: Backend) -> Result<Session, St
 }
 
 fn open_cpu(env: &Environment, model: &Path) -> ort::Result<Session> {
-    Ok(Session::builder(env)?.commit_from_file(model)?)
+    Session::builder(env)?.commit_from_file(model)
 }
 
 fn open_directml(env: &Environment, model: &Path) -> ort::Result<Session> {
-    Ok(Session::builder(env)?
+    Session::builder(env)?
         // DirectML rejects parallel execution and memory patterns.
         .with_parallel_execution(false)?
         .with_memory_pattern(false)?
         .with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()])?
-        .commit_from_file(model)?)
+        .commit_from_file(model)
 }
 
 fn open_plugin(env: &Environment, model: &Path, plugin: &Plugin) -> Result<Session, String> {
@@ -136,9 +136,9 @@ fn open_plugin(env: &Environment, model: &Path, plugin: &Plugin) -> Result<Sessi
         return Err("no compatible device".into());
     }
     let session = || -> ort::Result<Session> {
-        Ok(Session::builder(env)?
+        Session::builder(env)?
             .with_devices(ep_devices(), None)?
-            .commit_from_file(model)?)
+            .commit_from_file(model)
     };
     session().map_err(|e| e.to_string())
 }

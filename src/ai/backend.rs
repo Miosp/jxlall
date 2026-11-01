@@ -107,8 +107,12 @@ pub fn nvidia_gpu_present() -> bool {
     if cfg!(target_os = "linux") {
         has_nvidia_pci_device(Path::new(LINUX_PCI_DEVICES))
     } else if cfg!(windows) {
-        std::env::var_os("SystemRoot")
-            .is_some_and(|root| Path::new(&root).join("System32").join("nvcuda.dll").is_file())
+        std::env::var_os("SystemRoot").is_some_and(|root| {
+            Path::new(&root)
+                .join("System32")
+                .join("nvcuda.dll")
+                .is_file()
+        })
     } else {
         false
     }

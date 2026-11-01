@@ -125,7 +125,13 @@ impl Blender {
 
     /// Interleaved RGB in 0..=1.
     pub fn finish(mut self) -> Vec<f32> {
-        for (rgb, &weight) in self.weighted.chunks_exact_mut(CHANNELS).zip(&self.weights) {
+        for (rgb, &weight) in self
+            .weighted
+            .as_chunks_mut::<CHANNELS>()
+            .0
+            .iter_mut()
+            .zip(&self.weights)
+        {
             for v in rgb {
                 *v = (*v / weight).clamp(0.0, 1.0);
             }
@@ -198,12 +204,19 @@ mod tests {
     #[test]
     fn blending_identity_output_returns_the_input() {
         const TOLERANCE: f32 = 1e-4;
-        for (width, height, size) in [(1000, 700, 256), (64, 64, 64), (17, 300, 64), (513, 512, 512)]
-        {
+        for (width, height, size) in [
+            (1000, 700, 256),
+            (64, 64, 64),
+            (17, 300, 64),
+            (513, 512, 512),
+        ] {
             let (source, blended) = blend_identity(width, height, size);
             assert_eq!(source.len(), blended.len());
             for (a, b) in source.iter().zip(&blended) {
-                assert!((a - b).abs() < TOLERANCE, "{width}x{height}@{size}: {a} vs {b}");
+                assert!(
+                    (a - b).abs() < TOLERANCE,
+                    "{width}x{height}@{size}: {a} vs {b}"
+                );
             }
         }
     }

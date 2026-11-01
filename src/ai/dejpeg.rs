@@ -141,7 +141,7 @@ fn restore_frame(
     let mut rgb = blender.finish();
     if is_neutral(frame) {
         // The model could tint grayscale content.
-        for pixel in rgb.chunks_exact_mut(CHANNELS) {
+        for pixel in rgb.as_chunks_mut::<CHANNELS>().0 {
             let mean = pixel.iter().sum::<f32>() / CHANNELS as f32;
             pixel.fill(mean);
         }
@@ -229,7 +229,7 @@ fn store(frame: &mut ImageFrame, rgb: &[f32]) -> Result<(), String> {
 fn store_into<T>(samples: &mut [T], stride: usize, rgb: &[f32], from_unit: impl Fn(f32) -> T) {
     for (pixel, restored) in samples
         .chunks_exact_mut(stride)
-        .zip(rgb.chunks_exact(CHANNELS))
+        .zip(rgb.as_chunks::<CHANNELS>().0)
     {
         for (sample, &value) in pixel.iter_mut().zip(restored) {
             *sample = from_unit(value);
@@ -255,7 +255,11 @@ mod tests {
     }
 
     fn image(frame: ImageFrame) -> DecodedImage {
-        DecodedImage::new(frame, ColorDesc::new(None, None), MetaBoxes::new(None, None))
+        DecodedImage::new(
+            frame,
+            ColorDesc::new(None, None),
+            MetaBoxes::new(None, None),
+        )
     }
 
     /// Returns the input unchanged.
@@ -266,7 +270,13 @@ mod tests {
     #[test]
     fn jpeg_is_always_selected_other_pages_only_with_all() {
         let jpeg = Decoded::Jpeg(Arc::new(Vec::new()));
-        let page = Decoded::Image(Box::new(image(frame(Pixels::U8(vec![0; 3]), 8, false, 1, 1))));
+        let page = Decoded::Image(Box::new(image(frame(
+            Pixels::U8(vec![0; 3]),
+            8,
+            false,
+            1,
+            1,
+        ))));
         assert!(selects(&jpeg, false));
         assert!(selects(&jpeg, true));
         assert!(!selects(&page, false));
@@ -326,7 +336,12 @@ mod tests {
         let Pixels::U8(out) = &f.pixels else {
             panic!("storage type changed");
         };
-        assert!(out.chunks_exact(3).all(|p| p[0] == p[1] && p[1] == p[2]));
+        assert!(
+            out.as_chunks::<3>()
+                .0
+                .iter()
+                .all(|p| p[0] == p[1] && p[1] == p[2])
+        );
     }
 
     #[test]
@@ -343,7 +358,7 @@ mod tests {
         let Pixels::U8(out) = &f.pixels else {
             panic!("storage type changed");
         };
-        assert!(out.chunks_exact(3).any(|p| p[0] != p[1]));
+        assert!(out.as_chunks::<3>().0.iter().any(|p| p[0] != p[1]));
     }
 
     #[test]
@@ -384,6 +399,7 @@ mod tests {
         assert!(matches!(&f.pixels, Pixels::U8(v) if v.iter().all(|&p| p == 9)));
     }
 
+    #[cfg(feature = "ai")]
     fn psnr(a: &[u8], b: &[u8]) -> f64 {
         const PEAK: f64 = 255.0;
         let mse = a
@@ -395,6 +411,7 @@ mod tests {
         10.0 * (PEAK * PEAK / mse).log10()
     }
 
+    #[cfg(feature = "ai")]
     fn decode_rgb(jpeg: &[u8]) -> DecodedImage {
         match crate::format::jpeg::decode(jpeg).unwrap() {
             Decoded::Image(img) => *img,
@@ -414,7 +431,12 @@ mod tests {
         };
         let mut jpeg = Vec::new();
         jpeg_encoder::Encoder::new(&mut jpeg, LOW_QUALITY)
-            .encode(reference, width as u16, height as u16, jpeg_encoder::ColorType::Rgb)
+            .encode(
+                reference,
+                width as u16,
+                height as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
             .unwrap();
         let mut degraded = decode_rgb(&jpeg);
         let before = match &degraded.frame.pixels {

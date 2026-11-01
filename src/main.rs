@@ -14,6 +14,7 @@ mod stats;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use ai::dejpeg::Restorer;
 use stats::{Bytes, Stats};
 
 fn main() -> ExitCode {
@@ -42,9 +43,17 @@ fn main() -> ExitCode {
         };
     }
 
+    let restorer = match opts.dejpeg.map(Restorer::load).transpose() {
+        Ok(restorer) => restorer.map(Arc::new),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let total = files.len() as u64;
     let stats = Arc::new(Stats::default());
-    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats)) {
+    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats), restorer) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }

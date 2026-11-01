@@ -33,7 +33,10 @@ pub fn ensure(spec: &Remote) -> Result<PathBuf, String> {
     match verify_file(&path, spec.size, spec.sha256) {
         Ok(()) => return Ok(path),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!("note: cached {} unusable ({e}); downloading again", path.display()),
+        Err(e) => eprintln!(
+            "note: cached {} unusable ({e}); downloading again",
+            path.display()
+        ),
     }
     create_dir(&dir)?;
     remove_stale_parts(&dir, spec.file_name);
@@ -69,7 +72,12 @@ pub fn ensure_archive(spec: &Archive) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn install(spec: &Archive, download_path: &Path, extract_dir: &Path, dir: &Path) -> Result<(), String> {
+fn install(
+    spec: &Archive,
+    download_path: &Path,
+    extract_dir: &Path,
+    dir: &Path,
+) -> Result<(), String> {
     download(spec.url, spec.size, spec.sha256, download_path)?;
     std::fs::create_dir_all(extract_dir).map_err(|e| e.to_string())?;
     extract(download_path, spec.format, spec.files, extract_dir)?;
@@ -144,7 +152,9 @@ fn extract(
         ArchiveFormat::Zip => {
             let mut zip = zip::ZipArchive::new(source).map_err(|e| e.to_string())?;
             for file in files {
-                let entry = zip.by_name(file.entry).map_err(|e| format!("{}: {e}", file.entry))?;
+                let entry = zip
+                    .by_name(file.entry)
+                    .map_err(|e| format!("{}: {e}", file.entry))?;
                 write_entry(entry, file, out)?;
             }
             Ok(())
@@ -206,7 +216,9 @@ fn copy_hashing(mut src: impl Read, dst: &mut impl Write) -> io::Result<(u64, Ve
 
 fn check((len, digest): (u64, Vec<u8>), size: u64, sha256: &str) -> io::Result<()> {
     if len != size {
-        return Err(io::Error::other(format!("got {len} bytes, expected {size}")));
+        return Err(io::Error::other(format!(
+            "got {len} bytes, expected {size}"
+        )));
     }
     if hex(&digest) != sha256 {
         return Err(io::Error::other("SHA-256 mismatch"));
@@ -252,10 +264,8 @@ mod tests {
     }
 
     fn write_tgz(path: &Path, entries: &[(&str, &[u8])]) {
-        let gz = flate2::write::GzEncoder::new(
-            File::create(path).unwrap(),
-            flate2::Compression::fast(),
-        );
+        let gz =
+            flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());
         let mut tar = tar::Builder::new(gz);
         for (name, bytes) in entries {
             let mut header = tar::Header::new_gnu();
@@ -311,7 +321,15 @@ mod tests {
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
         assert!(extract(&path, ArchiveFormat::Zip, &[abc_file("wrong", "lib")], &out).is_err());
-        assert!(extract(&path, ArchiveFormat::Zip, &[abc_file("absent", "lib")], &out).is_err());
+        assert!(
+            extract(
+                &path,
+                ArchiveFormat::Zip,
+                &[abc_file("absent", "lib")],
+                &out
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -322,7 +340,15 @@ mod tests {
         write_tgz(&path, &[("other", b"abc")]);
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
-        assert!(extract(&path, ArchiveFormat::TarGz, &[abc_file("absent", "lib")], &out).is_err());
+        assert!(
+            extract(
+                &path,
+                ArchiveFormat::TarGz,
+                &[abc_file("absent", "lib")],
+                &out
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
