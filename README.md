@@ -19,7 +19,7 @@ compiled in): `cargo install --locked --git https://github.com/Miosp/jxlall`.
 
 | Format | How |
 |---|---|
-| JPEG | Lossless recompression; the original JPEG can be restored byte for byte. CMYK JPEGs are converted to RGB and lossless (SOF3) JPEGs are decoded to pixels instead. |
+| JPEG | Lossless recompression; the original JPEG can be restored byte for byte (`--iqa` can change its XMP, see [Quality rating](#quality-rating)). CMYK JPEGs are converted to RGB and lossless (SOF3) JPEGs are decoded to pixels instead. |
 | HEIC/HEIF, AVIF | Decoded at native bit depth. |
 | WebP, PNG | Stills only. |
 | TIFF / BigTIFF | Each page becomes `name_p1.jxl`, `name_p2.jxl`, ... |
@@ -63,8 +63,9 @@ See [AI backends](#ai-backends) for downloads and GPU support.
 ## AI backends
 
 `--dejpeg` and `--iqa` share one backend, chosen with `--ai-backend`. The default,
-`auto`, prefers a GPU and falls back to the CPU; a backend you name explicitly stops
-the run if it fails.
+`auto`, prefers a GPU and moves on to the next backend, ending with the CPU, if one
+fails to load; a backend you name explicitly stops the run instead. Once loaded, a
+backend that fails on a photo fails that file.
 
 On first use jxlall downloads ONNX Runtime, a GPU backend and the models to the user
 cache (`~/.cache/jxlall`, `%LOCALAPPDATA%\jxlall\cache`,
@@ -151,8 +152,8 @@ images.
 Lightroom, darktable, digiKam and Windows) from the mean of both scores:
 the values are the minimum for 2, 3, 4 and 5 stars. A rating the source
 already has is kept unless `--overwrite-rating`; `xmp:Rating="0"` (unrated)
-does not count, a reject (`-1`) does. A photo that cannot be scored
-converts unrated, with a note.
+does not count, a reject (`-1`) does. A photo that cannot be scored fails like any
+other conversion error, and its source is kept.
 
 The models are about 90 MB each. Rating costs roughly 1.5 s per photo on a 16-core CPU, before any GPU speedup. A recompressed JPEG
 without XMP stays restorable byte for byte (the rating lives in a separate

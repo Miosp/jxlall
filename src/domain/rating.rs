@@ -17,8 +17,8 @@ impl TryFrom<Vec<f32>> for StarThresholds {
         let t: [f32; 4] = v
             .try_into()
             .map_err(|_| "star thresholds: give exactly 4 values (minimum score for 2..5 stars)")?;
-        if t.iter().any(|x| !x.is_finite()) || !t.is_sorted_by(|a, b| a < b) {
-            return Err("star thresholds must be finite and strictly ascending".into());
+        if t.iter().any(|x| !(0.0..=1.0).contains(x)) || !t.is_sorted_by(|a, b| a < b) {
+            return Err("star thresholds must lie in 0..=1 and be strictly ascending".into());
         }
         Ok(Self(t))
     }
@@ -49,6 +49,13 @@ pub struct Rating {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thresholds_must_lie_in_the_score_range() {
+        assert!(StarThresholds::try_from(vec![0.2, 0.4, 0.6, 0.8]).is_ok());
+        assert!(StarThresholds::try_from(vec![20.0, 40.0, 60.0, 80.0]).is_err());
+        assert!(StarThresholds::try_from(vec![-0.1, 0.4, 0.6, 0.8]).is_err());
+    }
 
     #[test]
     fn stars_follow_thresholds_inclusively() {

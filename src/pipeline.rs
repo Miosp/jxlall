@@ -349,13 +349,10 @@ fn restore_page(page: Decoded, restorer: &Restorer, path: &Path) -> Result<Decod
 /// represent (CMYK, arithmetic, ...). Rating needs a pixel decode just for
 /// scoring; the fallback reuses the rating instead of scoring again.
 fn encode_jpeg(jpeg: &[u8], ctx: &FileContext) -> Result<Vec<u8>, String> {
-    let rating = ctx.rater.and_then(|_| match decode_jpeg_pixels(jpeg) {
-        Ok(img) => rate(ctx, &img),
-        Err(e) => {
-            eprintln!("note: {}: not rated ({e})", ctx.path.display());
-            None
-        }
-    });
+    let rating = match ctx.rater {
+        Some(_) => rate(ctx, &decode_jpeg_pixels(jpeg)?)?,
+        None => None,
+    };
     match encode_jbrd(jpeg, ctx, rating.as_ref()) {
         Ok(jxl) => Ok(jxl),
         Err(e) => {
@@ -396,24 +393,20 @@ fn encode_jbrd(
     }
 }
 
-/// `None` without `--iqa`, or with a note when scoring fails: an unrated
-/// conversion beats a failed one.
-fn rate(ctx: &FileContext, img: &DecodedImage) -> Option<Rating> {
-    let rater = ctx.rater?;
-    match rater.rate(&img.frame, img.orientation) {
-        Ok(rating) => {
-            log_rating(ctx, &rating);
-            Some(rating)
-        }
-        Err(e) => {
-            eprintln!("note: {}: not rated ({e})", ctx.path.display());
-            None
-        }
-    }
+/// `None` without `--iqa`. A failed score fails the file and keeps its source:
+/// a library silently left unrated could not be rated again after
+/// `--delete-originals`.
+fn rate(ctx: &FileContext, img: &DecodedImage) -> Result<Option<Rating>, String> {
+    let Some(rater) = ctx.rater else {
+        return Ok(None);
+    };
+    let rating = rater.rate(&img.frame, img.orientation)?;
+    log_rating(ctx, &rating);
+    Ok(Some(rating))
 }
 
 fn encode_decoded_image(img: DecodedImage, ctx: &FileContext) -> Result<Vec<u8>, String> {
-    let rating = rate(ctx, &img);
+    let rating = rate(ctx, &img)?;
     encode_pixels(img, ctx, rating)
 }
 

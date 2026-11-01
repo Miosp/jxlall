@@ -89,7 +89,7 @@ struct Args {
 
     /// Also write `xmp:Rating` stars from the mean of both scores: minimum
     /// values for 2, 3, 4 and 5 stars, comma-separated (lower gets 1 star).
-    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    #[arg(long, value_delimiter = ',')]
     iqa_stars: Option<Vec<f32>>,
 
     /// Replace a star rating the source already has.
@@ -244,6 +244,14 @@ mod tests {
         ] {
             assert_eq!(args(&["--ai-backend", name]).ai_backend, want);
         }
+    }
+
+    #[test]
+    fn iqa_stars_stops_at_the_next_argument() {
+        let parsed =
+            Args::try_parse_from(["jxlall", "--iqa-stars", "0.2,0.4,0.6,0.8", "a.png"]).unwrap();
+        assert_eq!(parsed.iqa_stars.unwrap(), [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(parsed.inputs, [std::path::PathBuf::from("a.png")]);
     }
 
     #[test]

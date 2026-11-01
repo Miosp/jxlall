@@ -12,7 +12,7 @@ mod tokenizer;
 use std::sync::{Mutex, PoisonError};
 
 use super::artifacts::Remote;
-use super::backend::BackendChoice;
+use super::backend::{Backend, BackendChoice};
 use super::runtime::{self, Model};
 use super::{Input, TensorData};
 use crate::domain::{ImageFrame, Orientation, Rating, Score, StarThresholds};
@@ -59,8 +59,9 @@ const MAX_IMAGE_SIDE: usize = 1024;
 const TECHNICAL_WEIGHT: f32 = 0.5;
 const UNIT_RANGE: (f32, f32) = (0.0, 1.0);
 const RGB: usize = 3;
-/// Image for the backend check at load time.
-const PROBE_SIDE: usize = 64;
+/// Image for the GPU check at load time: the largest token count real photos
+/// reach, so a backend that lacks the memory is rejected up front.
+const PROBE_SIDE: usize = MAX_IMAGE_SIDE;
 const PROBE_GRAY: u8 = 128;
 
 /// File URL in the export repository, pinned to a revision.
@@ -181,8 +182,7 @@ pub struct Rater {
 struct Scorer {
     spec: &'static ModelSpec,
     pos: PosTable,
-    /// The backend parallelizes each run itself; concurrent conversions take
-    /// turns.
+    /// Runs take turns across all models, see `Model::run`.
     model: Mutex<Model>,
 }
 
@@ -197,6 +197,9 @@ impl Scorer {
         let pos = PosTable::new(&values, dim)?;
         let probe = probe_tokens(&pos, spec.max_tokens)?;
         let model = Model::load(spec.id, &spec.model, backend, |model| {
+            if model.backend() == Backend::Cpu {
+                return Ok(());
+            }
             raw_score(model, &probe).map(|_| ())
         })?;
         Ok(Self {

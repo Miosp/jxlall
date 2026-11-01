@@ -76,6 +76,10 @@ impl Model {
                 };
                 feed.push((input.name, value));
             }
+            // One inference at a time across all models: GPU backends keep
+            // shared state per device, and each run already uses every CPU core.
+            static RUN_TURN: Mutex<()> = Mutex::new(());
+            let _turn = RUN_TURN.lock().unwrap_or_else(PoisonError::into_inner);
             let outputs = self.session.run(feed)?;
             let (_, values) = outputs[output].try_extract_tensor::<f32>()?;
             Ok(values.to_vec())
