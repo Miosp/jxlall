@@ -1,6 +1,6 @@
 //! Everything downloaded at run time, pinned by size and SHA-256.
 
-use super::backend::{Backend, order};
+use super::backend::Backend;
 
 /// A single downloadable file.
 pub struct Remote {
@@ -501,6 +501,7 @@ pub fn directml(arch: &str) -> Option<&'static Archive> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::backend::order;
     use super::*;
 
     const PLATFORMS: [(&str, &str); 5] = [

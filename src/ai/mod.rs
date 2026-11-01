@@ -7,5 +7,8 @@ mod artifacts;
 pub mod backend;
 #[allow(dead_code)]
 pub mod dejpeg;
+#[cfg(feature = "ai")]
+#[allow(dead_code)]
+mod fetch;
 #[allow(dead_code)]
 mod tiling;
