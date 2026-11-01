@@ -46,7 +46,7 @@ jobs:
           # Static musl builds run natively inside Alpine.
           - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04, alpine: true }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, alpine: true }
-          # ONNX Runtime has no x86_64 macOS (nor musl) build: no --iqa there.
+          # ONNX Runtime has no x86_64 macOS (nor musl) build: no AI features there.
           - { target: x86_64-apple-darwin, os: macos-26-intel, cargo_flags: --no-default-features }
           - { target: aarch64-apple-darwin, os: macos-26 }
           - { target: x86_64-pc-windows-msvc, os: windows-2025 }

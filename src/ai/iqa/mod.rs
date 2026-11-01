@@ -4,21 +4,19 @@
 //! resolution, so intentional blur (bokeh) is judged in context. Models are
 //! ONNX exports, fetched once into the per-user cache.
 
-#[cfg(feature = "iqa")]
-mod engine;
-#[cfg(not(feature = "iqa"))]
-#[path = "engine_stub.rs"]
-mod engine;
-#[cfg(feature = "iqa")]
-mod fetch;
 mod input;
-#[cfg(feature = "iqa")]
 mod npy;
 mod resample;
 mod tokenizer;
 
+use std::sync::{Mutex, PoisonError};
+
+use super::artifacts::Remote;
+use super::backend::BackendChoice;
+use super::runtime::{self, Model};
+use super::{Input, TensorData};
 use crate::domain::{ImageFrame, Orientation, Rating, Score, StarThresholds};
-use tokenizer::{PosTable, Tokens};
+use tokenizer::{PATCH, PosTable, Tokens};
 
 /// Model that scores detail and technical quality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -42,18 +40,7 @@ pub enum AestheticModel {
     Baid,
 }
 
-/// A downloadable file, pinned by content.
-#[cfg_attr(not(feature = "iqa"), allow(dead_code))]
-struct Remote {
-    /// Cache file name; changes whenever the content does.
-    file_name: &'static str,
-    url: &'static str,
-    sha256: &'static str,
-    size: u64,
-}
-
 /// One exported checkpoint.
-#[cfg_attr(not(feature = "iqa"), allow(dead_code))]
 struct ModelSpec {
     /// Written to XMP next to the score.
     id: &'static str,
@@ -71,6 +58,10 @@ const MAX_IMAGE_SIDE: usize = 1024;
 /// Share of the technical score in the star rating.
 const TECHNICAL_WEIGHT: f32 = 0.5;
 const UNIT_RANGE: (f32, f32) = (0.0, 1.0);
+const RGB: usize = 3;
+/// Image for the backend check at load time.
+const PROBE_SIDE: usize = 64;
+const PROBE_GRAY: u8 = 128;
 
 /// File URL in the export repository, pinned to a revision.
 macro_rules! hf_url {
@@ -190,22 +181,39 @@ pub struct Rater {
 struct Scorer {
     spec: &'static ModelSpec,
     pos: PosTable,
-    model: engine::Model,
+    /// The backend parallelizes each run itself; concurrent conversions take
+    /// turns.
+    model: Mutex<Model>,
 }
 
 impl Scorer {
-    fn load(spec: &'static ModelSpec) -> Result<Self, String> {
-        let (model, pos_values, dim) = engine::load(spec)?;
-        let pos = PosTable::new(&pos_values, dim)?;
-        Ok(Self { spec, pos, model })
+    fn load(spec: &'static ModelSpec, backend: BackendChoice) -> Result<Self, String> {
+        let pos_path = runtime::ensure_file(spec.pos_table)?;
+        let pos_bytes =
+            std::fs::read(&pos_path).map_err(|e| format!("{}: {e}", pos_path.display()))?;
+        let (values, shape) =
+            npy::read_f32(&pos_bytes).map_err(|e| format!("{}: {e}", pos_path.display()))?;
+        let dim = *shape.last().ok_or("empty position table shape")?;
+        let pos = PosTable::new(&values, dim)?;
+        let probe = probe_tokens(&pos, spec.max_tokens)?;
+        let model = Model::load(spec.id, &spec.model, backend, |model| {
+            raw_score(model, &probe).map(|_| ())
+        })?;
+        Ok(Self {
+            spec,
+            pos,
+            model: Mutex::new(model),
+        })
+    }
+
+    fn raw(&self, tokens: &Tokens) -> Result<f32, String> {
+        let mut model = self.model.lock().unwrap_or_else(PoisonError::into_inner);
+        raw_score(&mut model, tokens)
     }
 
     /// Score mapped to 0..=1.
     fn score(&self, tokens: &Tokens) -> Result<Score, String> {
-        let raw = self.model.run(tokens)?;
-        if !raw.is_finite() {
-            return Err(format!("{} returned {raw}", self.spec.id));
-        }
+        let raw = self.raw(tokens)?;
         let (lo, hi) = self.spec.score_range;
         Ok(Score {
             value: ((raw - lo) / (hi - lo)).clamp(0.0, 1.0),
@@ -218,12 +226,50 @@ impl Scorer {
     }
 }
 
+fn probe_tokens(pos: &PosTable, max_tokens: usize) -> Result<Tokens, String> {
+    let image = resample::Rgb8 {
+        width: PROBE_SIDE,
+        height: PROBE_SIDE,
+        data: vec![PROBE_GRAY; RGB * PROBE_SIDE * PROBE_SIDE],
+    };
+    tokenizer::tokenize(&image, pos, max_tokens)
+}
+
+/// Raw `score` output for one image.
+fn raw_score(model: &mut Model, tokens: &Tokens) -> Result<f32, String> {
+    let n = tokens.scale_ids.len();
+    let dim = tokens.pos_embed.len() / n;
+    let inputs = [
+        Input {
+            name: "patches",
+            shape: vec![1, n, RGB, PATCH, PATCH],
+            data: TensorData::F32(&tokens.patches),
+        },
+        Input {
+            name: "pos_embed",
+            shape: vec![1, n, dim],
+            data: TensorData::F32(&tokens.pos_embed),
+        },
+        Input {
+            name: "scale_ids",
+            shape: vec![1, n],
+            data: TensorData::I64(&tokens.scale_ids),
+        },
+    ];
+    let score = model.run(&inputs, "score")?;
+    match score.first() {
+        Some(raw) if raw.is_finite() => Ok(*raw),
+        Some(raw) => Err(format!("model returned {raw}")),
+        None => Err("model returned no score".into()),
+    }
+}
+
 impl Rater {
     /// Fetch the models if they are not cached yet, then load them.
-    pub fn load(opts: IqaOptions) -> Result<Self, String> {
+    pub fn load(opts: IqaOptions, backend: BackendChoice) -> Result<Self, String> {
         Ok(Self {
-            technical: Scorer::load(opts.technical.spec())?,
-            aesthetic: Scorer::load(opts.aesthetic.spec())?,
+            technical: Scorer::load(opts.technical.spec(), backend)?,
+            aesthetic: Scorer::load(opts.aesthetic.spec(), backend)?,
             stars: opts.stars,
             overwrite_stars: opts.overwrite_stars,
         })
@@ -273,6 +319,61 @@ pub(crate) mod tests {
         let technical = TechnicalModel::value_variants().iter().map(|m| m.spec());
         let aesthetic = AestheticModel::value_variants().iter().map(|m| m.spec());
         technical.chain(aesthetic).collect()
+    }
+
+    #[test]
+    fn probe_image_tokenizes_for_every_token_budget() {
+        const POS_DIM: usize = 4;
+        const POS_GRID: usize = 37;
+        let values = vec![0.0; (POS_GRID * POS_GRID + 1) * POS_DIM];
+        let pos = PosTable::new(&values, POS_DIM).unwrap();
+        for spec in all_specs() {
+            assert!(
+                !probe_tokens(&pos, spec.max_tokens)
+                    .unwrap()
+                    .scale_ids
+                    .is_empty()
+            );
+        }
+    }
+
+    /// Same images and models as `testdata/make_golden.py`; within 1% of
+    /// the score range, as the charm-onnx end-to-end tests allow.
+    #[cfg(feature = "ai")]
+    fn assert_scores_match_reference(backend: BackendChoice) {
+        use super::tokenizer::{fit, tests::pattern, tokenize};
+        const TOLERANCE_FRACTION: f32 = 0.01;
+        for spec in all_specs() {
+            let scorer = Scorer::load(spec, backend).unwrap();
+            let name = spec.dataset();
+            for case in golden_cases() {
+                let image = fit(pattern(case.width, case.height), MAX_IMAGE_SIDE);
+                let tokens = tokenize(&image, &scorer.pos, spec.max_tokens).unwrap();
+                let got = scorer.raw(&tokens).unwrap();
+                let want = case.scores.iter().find(|(m, _)| m == name).unwrap().1;
+                let tolerance = TOLERANCE_FRACTION * (spec.score_range.1 - spec.score_range.0);
+                assert!(
+                    (got - want).abs() < tolerance,
+                    "{name} {}x{}: {got} vs {want}",
+                    case.width,
+                    case.height
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "ai")]
+    #[test]
+    #[ignore = "downloads ONNX Runtime and six 86 MB models"]
+    fn scores_match_reference_on_cpu() {
+        assert_scores_match_reference(BackendChoice::Cpu);
+    }
+
+    #[cfg(feature = "ai")]
+    #[test]
+    #[ignore = "downloads ONNX Runtime, the WebGPU plugin and six 86 MB models"]
+    fn scores_match_reference_on_webgpu() {
+        assert_scores_match_reference(BackendChoice::Webgpu);
     }
 
     /// The reference outputs of every model lie inside its declared raw

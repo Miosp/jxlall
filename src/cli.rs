@@ -4,9 +4,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::ai::backend::BackendChoice;
+use crate::ai::dejpeg::DejpegOptions;
+use crate::ai::iqa::{AestheticModel, IqaOptions, TechnicalModel};
 use crate::domain::StarThresholds;
 use crate::encode::{Distance, Effort, EncodeSettings, NoiseStrength};
-use crate::iqa::{AestheticModel, IqaOptions, TechnicalModel};
 
 #[derive(Parser, Debug)]
 #[command(name = "jxlall", version, about = "Convert photos to JPEG XL")]
@@ -94,6 +96,22 @@ struct Args {
     #[arg(long)]
     overwrite_rating: bool,
 
+    /// Remove JPEG artifacts from JPEG inputs with the DeJPEGNet v2 model.
+    /// ONNX Runtime, a GPU backend and the model are downloaded on first use.
+    /// Other settings are unchanged, so with the default -d 0 restored images
+    /// are stored losslessly.
+    #[arg(long)]
+    dejpeg: bool,
+
+    /// With --dejpeg: process every input, not only JPEGs.
+    #[arg(long)]
+    dejpeg_all: bool,
+
+    /// Backend for --dejpeg and --iqa. `auto` prefers a GPU and falls back to
+    /// the CPU.
+    #[arg(long, value_enum, default_value_t = BackendChoice::Auto)]
+    ai_backend: BackendChoice,
+
     /// Verbose per-file logging.
     #[arg(short, long)]
     verbose: bool,
@@ -126,6 +144,8 @@ pub struct RunOptions {
     pub pattern: String,
     pub delete_originals: bool,
     pub iqa: Option<IqaOptions>,
+    pub dejpeg: Option<DejpegOptions>,
+    pub ai_backend: BackendChoice,
     pub verbose: bool,
 }
 
@@ -143,7 +163,7 @@ pub fn parse() -> Result<RunOptions, String> {
     }
     if args.add_noise && distance.is_lossless() {
         eprintln!("note: --add-noise needs lossy encoding (-d > 0); no grain will be added");
-    } else if args.add_noise && !args.force_lossy_jpeg {
+    } else if args.add_noise && !args.force_lossy_jpeg && !args.dejpeg {
         eprintln!(
             "note: JPEGs recompressed losslessly get no grain; add --force-lossy-jpeg for them"
         );
@@ -154,6 +174,17 @@ pub fn parse() -> Result<RunOptions, String> {
         eprintln!("warning: --iqa-* and --overwrite-rating options have no effect without --iqa");
     } else if stars.is_none() && args.overwrite_rating {
         eprintln!("warning: --overwrite-rating has no effect without --iqa-stars");
+    }
+    if !args.dejpeg && args.dejpeg_all {
+        eprintln!("warning: --dejpeg-all has no effect without --dejpeg");
+    }
+    if !args.dejpeg && !args.iqa && args.ai_backend != BackendChoice::Auto {
+        eprintln!("warning: --ai-backend has no effect without --dejpeg or --iqa");
+    }
+    if args.dejpeg && args.delete_originals {
+        eprintln!(
+            "warning: --dejpeg with --delete-originals: the original JPEGs cannot be restored from the output"
+        );
     }
     if args.jobs.is_some_and(|j| j > MAX_JOBS) {
         eprintln!("note: --jobs capped at {MAX_JOBS}");
@@ -173,6 +204,10 @@ pub fn parse() -> Result<RunOptions, String> {
         recursive: args.recursive,
         pattern: args.pattern,
         delete_originals: args.delete_originals,
+        dejpeg: args.dejpeg.then_some(DejpegOptions {
+            all: args.dejpeg_all,
+        }),
+        ai_backend: args.ai_backend,
         iqa: args.iqa.then(|| IqaOptions {
             technical: args.iqa_technical.unwrap_or(TechnicalModel::Spaq),
             aesthetic: args.iqa_aesthetic.unwrap_or(AestheticModel::Para),
@@ -181,4 +216,38 @@ pub fn parse() -> Result<RunOptions, String> {
         }),
         verbose: args.verbose,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(extra: &[&str]) -> Args {
+        Args::try_parse_from(["jxlall", "in.jpg"].iter().chain(extra)).unwrap()
+    }
+
+    #[test]
+    fn dejpeg_is_off_by_default_and_backend_defaults_to_auto() {
+        let parsed = args(&[]);
+        assert!(!parsed.dejpeg && !parsed.dejpeg_all);
+        assert_eq!(parsed.ai_backend, BackendChoice::Auto);
+    }
+
+    #[test]
+    fn backend_names_parse() {
+        for (name, want) in [
+            ("auto", BackendChoice::Auto),
+            ("tensorrt-rtx", BackendChoice::TensorrtRtx),
+            ("directml", BackendChoice::Directml),
+            ("webgpu", BackendChoice::Webgpu),
+            ("cpu", BackendChoice::Cpu),
+        ] {
+            assert_eq!(args(&["--ai-backend", name]).ai_backend, want);
+        }
+    }
+
+    #[test]
+    fn dejpeg_leaves_distance_alone() {
+        assert_eq!(args(&["--dejpeg"]).distance, 0.0);
+    }
 }

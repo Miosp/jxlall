@@ -30,7 +30,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      # Builds without ONNX Runtime (musl, x86_64 macOS) drop the `iqa` feature.
+      # Builds without ONNX Runtime (musl, x86_64 macOS) drop the `ai` feature.
       - run: cargo clippy --all-targets --locked --no-default-features -- -D warnings
 
   deny:

@@ -2,8 +2,8 @@
 # Builds a fully static musl binary for the host architecture inside Alpine,
 # runs the tests there and checks that the binary has no dynamic loader.
 # Docker's seccomp profile blocks io_uring, so the tests also cover the
-# polling fallback. ONNX Runtime ships no musl build, so quality rating
-# (the default `iqa` feature) is left out. Usage: build-alpine.sh TARGET
+# polling fallback. A static binary cannot load ONNX Runtime, so the default
+# `ai` feature is left out. Usage: build-alpine.sh TARGET
 set -euo pipefail
 
 # rust:1.99.1-alpine3.24, pinned by digest.

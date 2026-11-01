@@ -1,12 +1,12 @@
 //! CLI entry: discover inputs, convert to JXL, print summary.
 
+mod ai;
 mod cli;
 mod decode;
 mod domain;
 mod encode;
 mod format;
 mod inputs;
-mod iqa;
 mod pipeline;
 mod sniff;
 mod stats;
@@ -14,6 +14,8 @@ mod stats;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use ai::dejpeg::Restorer;
+use ai::iqa::Rater;
 use stats::{Bytes, Stats};
 
 fn main() -> ExitCode {
@@ -42,7 +44,16 @@ fn main() -> ExitCode {
         };
     }
 
-    let rater = match opts.iqa.map(iqa::Rater::load).transpose() {
+    let backend = opts.ai_backend;
+    let load_error = |e: String| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    };
+    let restorer = match opts.dejpeg.map(|o| Restorer::load(o, backend)).transpose() {
+        Ok(restorer) => restorer.map(Arc::new),
+        Err(e) => return load_error(e),
+    };
+    let rater = match opts.iqa.map(|o| Rater::load(o, backend)).transpose() {
         Ok(rater) => rater.map(Arc::new),
         Err(e) => {
             eprintln!("error: {e}");
@@ -52,7 +63,7 @@ fn main() -> ExitCode {
 
     let total = files.len() as u64;
     let stats = Arc::new(Stats::default());
-    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats), rater) {
+    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats), restorer, rater) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }

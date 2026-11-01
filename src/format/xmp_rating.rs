@@ -13,7 +13,7 @@ const XMP_NS: &str = "http://ns.adobe.com/xap/1.0/";
 const RATING: &str = "Rating";
 /// `xmp:Rating` value meaning "not rated"; cameras and editors write it.
 const UNRATED: &str = "0";
-pub const IQA_NS: &str = "http://ns.jxlall/iqa/1.0/";
+pub const IQA_NS: &str = "https://github.com/Miosp/jxlall/ns/iqa/1.0/";
 const IQA_PREFIX: &str = "jxlall";
 const SCORE_DECIMALS: usize = 4;
 const PACKET_TRAILER: &[u8] = b"<?xpacket end=";
