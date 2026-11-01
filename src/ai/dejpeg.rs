@@ -1,12 +1,83 @@
 //! JPEG artifact removal with DeJPEGNet v2: which pages qualify, and how their
 //! pixels pass through the model.
 
+use std::path::Path;
+use std::sync::{Mutex, PoisonError};
+
+use super::artifacts::DEJPEG_V2;
+use super::backend::{Backend, BackendChoice};
+use super::runtime::Model;
 use super::tiling::{Blender, CHANNELS, Tile, TilePlan, mirror};
 use crate::domain::{Decoded, DecodedImage, ImageFrame, Pixels};
 
 const MIN_TILE: usize = 64;
 const U8_MAX: f32 = 255.0;
 const U16_BITS: u32 = 16;
+
+const GPU_TILE: usize = 512;
+/// Faster per output pixel than 512 px on the measured CPU.
+const CPU_TILE: usize = 256;
+const PROBE_TILE: usize = 64;
+const MODEL_INPUT: &str = "input";
+const MODEL_OUTPUT: &str = "output";
+
+/// User choices for artifact removal.
+#[derive(Debug, Clone, Copy)]
+pub struct DejpegOptions {
+    /// Restore every input, not only JPEGs.
+    pub all: bool,
+    pub backend: BackendChoice,
+}
+
+/// The loaded model, shared by all conversions.
+pub struct Restorer {
+    all: bool,
+    /// Held for a whole image: the backend parallelizes each run itself, and
+    /// this bounds the blend buffers to one image.
+    engine: Mutex<Engine>,
+}
+
+struct Engine {
+    model: Model,
+    tile: usize,
+}
+
+impl Restorer {
+    pub fn load(options: DejpegOptions) -> Result<Self, String> {
+        let model = Model::load(&DEJPEG_V2, options.backend, |model| {
+            let probe = vec![0.0; CHANNELS * PROBE_TILE * PROBE_TILE];
+            model
+                .run_rgb(MODEL_INPUT, MODEL_OUTPUT, &probe, PROBE_TILE)
+                .map(|_| ())
+        })?;
+        let tile = if model.backend() == Backend::Cpu {
+            CPU_TILE
+        } else {
+            GPU_TILE
+        };
+        Ok(Self {
+            all: options.all,
+            engine: Mutex::new(Engine { model, tile }),
+        })
+    }
+
+    pub fn all(&self) -> bool {
+        self.all
+    }
+
+    /// Restore one page in place; ineligible pages pass through with a note.
+    pub fn restore(&self, img: &mut DecodedImage, path: &Path) -> Result<(), String> {
+        if let Some(reason) = ineligible_reason(img) {
+            eprintln!("note: {}: artifacts not removed ({reason})", path.display());
+            return Ok(());
+        }
+        let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
+        let Engine { model, tile } = &mut *engine;
+        restore_with_fallback(&mut img.frame, tile, &mut |input, size| {
+            model.run_rgb(MODEL_INPUT, MODEL_OUTPUT, input, size)
+        })
+    }
+}
 
 /// Whether a decoded page goes through the model. JPEGs always do; everything
 /// else only with `--dejpeg-all`.
@@ -311,5 +382,55 @@ mod tests {
         assert!(restore_with_fallback(&mut f, &mut tile, &mut broken).is_err());
         assert_eq!(seen, [128, 64]);
         assert!(matches!(&f.pixels, Pixels::U8(v) if v.iter().all(|&p| p == 9)));
+    }
+
+    fn psnr(a: &[u8], b: &[u8]) -> f64 {
+        const PEAK: f64 = 255.0;
+        let mse = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (f64::from(*x) - f64::from(*y)).powi(2))
+            .sum::<f64>()
+            / a.len() as f64;
+        10.0 * (PEAK * PEAK / mse).log10()
+    }
+
+    fn decode_rgb(jpeg: &[u8]) -> DecodedImage {
+        match crate::format::jpeg::decode(jpeg).unwrap() {
+            Decoded::Image(img) => *img,
+            Decoded::Jpeg(_) => panic!("pixel decode expected"),
+        }
+    }
+
+    #[cfg(feature = "ai")]
+    #[test]
+    #[ignore = "downloads ONNX Runtime and the 15 MB model"]
+    fn restoring_a_compressed_image_improves_psnr() {
+        const LOW_QUALITY: u8 = 20;
+        let original = decode_rgb(include_bytes!("../../.github/smoke/plasma.jpg"));
+        let (width, height) = (original.frame.width, original.frame.height);
+        let Pixels::U8(reference) = &original.frame.pixels else {
+            panic!("8-bit JPEG expected");
+        };
+        let mut jpeg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpeg, LOW_QUALITY)
+            .encode(reference, width as u16, height as u16, jpeg_encoder::ColorType::Rgb)
+            .unwrap();
+        let mut degraded = decode_rgb(&jpeg);
+        let before = match &degraded.frame.pixels {
+            Pixels::U8(v) => psnr(reference, v),
+            _ => panic!("8-bit JPEG expected"),
+        };
+        let restorer = Restorer::load(DejpegOptions {
+            all: false,
+            backend: BackendChoice::Cpu,
+        })
+        .unwrap();
+        restorer.restore(&mut degraded, Path::new("test")).unwrap();
+        let after = match &degraded.frame.pixels {
+            Pixels::U8(v) => psnr(reference, v),
+            _ => panic!("8-bit JPEG expected"),
+        };
+        assert!(after > before, "{after} dB is not above {before} dB");
     }
 }

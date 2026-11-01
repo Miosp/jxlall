@@ -10,5 +10,11 @@ pub mod dejpeg;
 #[cfg(feature = "ai")]
 #[allow(dead_code)]
 mod fetch;
+#[cfg(feature = "ai")]
+#[allow(dead_code)]
+mod runtime;
+#[cfg(not(feature = "ai"))]
+#[path = "runtime_stub.rs"]
+mod runtime;
 #[allow(dead_code)]
 mod tiling;
