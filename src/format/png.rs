@@ -121,7 +121,7 @@ fn gama_chrm(info: &png::Info) -> Option<CustomColor> {
     let gamma = gamma.filter(|g| {
         let ok = (MIN_OETF_GAMMA..=1.0).contains(g);
         if !ok {
-            eprintln!("note: PNG gAMA {g} out of range, ignored");
+            notice!("note: PNG gAMA {g} out of range, ignored");
         }
         ok
     });
@@ -131,7 +131,7 @@ fn gama_chrm(info: &png::Info) -> Option<CustomColor> {
         .filter(|c| {
             let ok = chromaticities_ok(c);
             if !ok {
-                eprintln!("note: PNG cHRM invalid or degenerate, ignored");
+                notice!("note: PNG cHRM invalid or degenerate, ignored");
             }
             ok
         });

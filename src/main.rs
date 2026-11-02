@@ -1,5 +1,8 @@
 //! CLI entry: discover inputs, convert to JXL, print summary.
 
+#[macro_use]
+mod progress;
+
 mod ai;
 mod cli;
 mod decode;
@@ -11,12 +14,13 @@ mod pipeline;
 mod sniff;
 mod stats;
 
+use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use ai::dejpeg::Restorer;
 use ai::iqa::Rater;
-use stats::{Bytes, Stats};
+use stats::{Report, Stats};
 
 fn main() -> ExitCode {
     let opts = match cli::parse() {
@@ -61,39 +65,28 @@ fn main() -> ExitCode {
         }
     };
 
-    let total = files.len() as u64;
+    let total_files = files.len() as u64;
     let stats = Arc::new(Stats::default());
-    if let Err(e) = pipeline::run(opts, files, Arc::clone(&stats), restorer, rater) {
-        eprintln!("error: {e}");
-        return ExitCode::FAILURE;
-    }
-    // Without --keep-going a failure stops scheduling the rest.
-    let skipped = total - stats.done();
-    // Counted only now: a failure stops scheduling without --keep-going,
-    // but a missing input must not prevent converting the others.
-    stats.record_fails(input_errors);
-
-    let s = stats.snapshot();
-    println!(
-        "{ok} converted, {failed} failed{skipped}, {in_b} -> {out_b} ({pct:.1}%)",
-        ok = s.ok,
-        failed = s.failed,
-        skipped = if skipped > 0 {
-            format!(", {skipped} skipped")
-        } else {
-            String::new()
-        },
-        in_b = Bytes(s.bytes_in),
-        out_b = Bytes(s.bytes_out),
-        pct = if s.bytes_in > 0 {
-            s.bytes_out as f64 / s.bytes_in as f64 * 100.0
-        } else {
-            0.0
-        },
-    );
-    if s.failed > 0 {
-        ExitCode::FAILURE
-    } else {
+    let summary = match pipeline::run(opts, files, Arc::clone(&stats), restorer, rater) {
+        Ok(summary) => summary,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = Report {
+        stats: &stats,
+        total_files,
+        elapsed: summary.elapsed,
+        settings: summary.settings,
+        notes: progress::notes(),
+        input_errors,
+    };
+    // A closed stdout must not turn a finished run into a panic.
+    let _ = write!(std::io::stdout(), "{report}");
+    if report.succeeded() {
         ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }

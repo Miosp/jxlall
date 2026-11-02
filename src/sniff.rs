@@ -10,6 +10,18 @@ pub enum Format {
     Heif,
 }
 
+impl Format {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Jpeg => "JPEG",
+            Self::Png => "PNG",
+            Self::Tiff => "TIFF",
+            Self::WebP => "WebP",
+            Self::Heif => "HEIF/AVIF",
+        }
+    }
+}
+
 /// Sniff format from leading bytes. Returns `None` for unknown formats.
 pub fn sniff(data: &[u8]) -> Option<Format> {
     if data.starts_with(&[0xFF, 0xD8, 0xFF]) {

@@ -66,7 +66,7 @@ impl Restorer {
     /// Restore one page in place; ineligible pages pass through with a note.
     pub fn restore(&self, img: &mut DecodedImage, path: &Path) -> Result<(), String> {
         if let Some(reason) = ineligible_reason(img) {
-            eprintln!("note: {}: artifacts not removed ({reason})", path.display());
+            notice!("note: {}: artifacts not removed ({reason})", path.display());
             return Ok(());
         }
         let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
@@ -130,7 +130,7 @@ pub fn restore_with_fallback(
             Err(e) if *tile <= MIN_TILE => return Err(e),
             Err(e) => {
                 *tile /= 2;
-                eprintln!(
+                notice!(
                     "note: restore failed ({e}); retrying with {} px tiles",
                     *tile
                 );

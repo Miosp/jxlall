@@ -116,8 +116,14 @@ jxlall [OPTIONS] [INPUTS]...
       --ai-backend <B>     auto, tensorrt-rtx, directml, webgpu or cpu (default auto)
       --keep-going         continue after errors
       --dry-run            list what would be converted
-  -v, --verbose            per-file logging
+  -v, --verbose            log each file's details and timings
 ```
+
+In a terminal, a progress bar shows files done, time elapsed and time left. The
+estimate weighs files by size and starts once the first file has finished, so a
+single photo shows its current step instead. A summary follows on stdout: sizes,
+speed, per-format breakdown, the slowest file, notes and failures with their
+reasons (the first 20; stderr has them all).
 
 Directory scans skip hidden files and do not follow symlinks. Without
 `--keep-going` the first failure stops new conversions and the rest are

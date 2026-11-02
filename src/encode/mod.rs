@@ -46,7 +46,7 @@ impl Distance {
         self.0 == 0.0
     }
 
-    fn get(self) -> f32 {
+    pub fn get(self) -> f32 {
         self.0
     }
 }
@@ -303,10 +303,10 @@ fn resolve_color<'a>(
                 choice.gray = true;
                 gray_pixels = Some(px);
             }
-            None => eprintln!("note: gray ICC profile on color pixels dropped"),
+            None => notice!("note: gray ICC profile on color pixels dropped"),
         },
         Some(IccSpace::Other) => {
-            eprintln!("note: non-RGB ICC profile (e.g. CMYK) does not match RGB pixels, dropped");
+            notice!("note: non-RGB ICC profile (e.g. CMYK) does not match RGB pixels, dropped");
         }
         None => {}
     }

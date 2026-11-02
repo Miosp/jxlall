@@ -144,7 +144,7 @@ pub fn scan_segments(data: &[u8]) -> SegmentMeta {
     {
         match xmp_extended::merge(main, &xmp_chunks) {
             Ok(merged) => meta.xmp = Some(merged),
-            Err(e) => eprintln!("note: extended XMP dropped ({e}), main packet kept"),
+            Err(e) => notice!("note: extended XMP dropped ({e}), main packet kept"),
         }
     }
     meta
