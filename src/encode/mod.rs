@@ -89,6 +89,8 @@ pub struct EncodeSettings {
     pub distance: Distance,
     /// `Some` when grain synthesis is enabled (`--add-noise`).
     pub noise: Option<NoiseStrength>,
+    /// libjxl worker threads for this file.
+    pub threads: usize,
 }
 
 /// Decode-time grain synthesis at the given ISO (full-frame equivalent).
@@ -120,7 +122,7 @@ pub fn encode_jpeg(
     settings: &EncodeSettings,
     extra_xmp: Option<&[u8]>,
 ) -> Result<Vec<u8>, EncodeError> {
-    let e = Enc::new()?;
+    let e = Enc::new(settings.threads)?;
     unsafe {
         check(
             JxlEncoderStoreJPEGMetadata(e.enc, true.into()),
@@ -172,7 +174,7 @@ pub fn encode_image(
     settings: &EncodeSettings,
     photon_noise_iso: Option<f32>,
 ) -> Result<Vec<u8>, EncodeError> {
-    let e = Enc::new()?;
+    let e = Enc::new(settings.threads)?;
     unsafe {
         check(JxlEncoderUseContainer(e.enc, true.into()), "UseContainer")?;
         let mut bi = std::mem::MaybeUninit::<JxlBasicInfo>::uninit();
@@ -183,9 +185,10 @@ pub fn encode_image(
         let (choice, gray_pixels) = resolve_color(frame, color);
         bi.num_color_channels = if choice.gray { 1 } else { 3 };
         bi.orientation = orientation.jxl();
+        let bit_depth = stored_bit_depth(frame);
         if frame.has_alpha {
             bi.num_extra_channels = 1;
-            bi.alpha_bits = u32::from(frame.bit_depth);
+            bi.alpha_bits = u32::from(bit_depth);
             bi.alpha_premultiplied = frame.alpha_premultiplied.into();
             // Float samples use an 8-bit exponent in the alpha channel too.
             bi.alpha_exponent_bits = if matches!(frame.pixels, Pixels::F32(_)) {
@@ -197,7 +200,7 @@ pub fn encode_image(
         if let Some(nits) = hdr.intensity_target {
             bi.intensity_target = nits;
         }
-        apply_bit_depth(&mut bi, frame);
+        apply_bit_depth(&mut bi, frame, bit_depth);
         if settings.distance.is_lossless() {
             // Lossless requires keeping the source color profile untouched.
             bi.uses_original_profile = true.into();
@@ -247,14 +250,26 @@ pub fn encode_image(
     e.collect_output()
 }
 
-fn apply_bit_depth(bi: &mut JxlBasicInfo, frame: &ImageFrame) {
+/// Full-range 16-bit value of 8-bit sample 1.
+const U8_TO_U16_SCALE: u16 = 257;
+
+/// Bits to declare for this frame. 8-bit content in 16-bit storage is declared
+/// as 8 bits: it decodes to the same values and spares libjxl a sparse range.
+fn stored_bit_depth(frame: &ImageFrame) -> u8 {
+    match &frame.pixels {
+        Pixels::U16(v) if frame.bit_depth == 16 && v.iter().all(|s| s % U8_TO_U16_SCALE == 0) => 8,
+        _ => frame.bit_depth,
+    }
+}
+
+fn apply_bit_depth(bi: &mut JxlBasicInfo, frame: &ImageFrame, bit_depth: u8) {
     match &frame.pixels {
         Pixels::U8(_) => {
-            bi.bits_per_sample = u32::from(frame.bit_depth.min(8));
+            bi.bits_per_sample = u32::from(bit_depth.min(8));
             bi.exponent_bits_per_sample = 0;
         }
         Pixels::U16(_) => {
-            bi.bits_per_sample = u32::from(frame.bit_depth);
+            bi.bits_per_sample = u32::from(bit_depth);
             bi.exponent_bits_per_sample = 0;
         }
         Pixels::F32(_) => {
@@ -466,7 +481,168 @@ mod tests {
             effort: Effort::try_from(1).unwrap(),
             distance: Distance::try_from(0.0).unwrap(),
             noise: None,
+            threads: 1,
         }
+    }
+
+    /// Decode a JXL to interleaved RGB u16, with the depth the file declares.
+    fn decode_u16(jxl: &[u8]) -> (u32, Vec<u16>) {
+        use jpegxl_sys::decode::*;
+        unsafe {
+            let dec = JxlDecoderCreate(std::ptr::null());
+            let events = JxlDecoderStatus::BasicInfo as i32 | JxlDecoderStatus::FullImage as i32;
+            assert_eq!(
+                JxlDecoderSubscribeEvents(dec, events),
+                JxlDecoderStatus::Success
+            );
+            assert_eq!(
+                JxlDecoderSetInput(dec, jxl.as_ptr(), jxl.len()),
+                JxlDecoderStatus::Success
+            );
+            JxlDecoderCloseInput(dec);
+            let format = JxlPixelFormat {
+                num_channels: 3,
+                data_type: JxlDataType::Uint16,
+                endianness: JxlEndianness::Native,
+                align: 0,
+            };
+            let mut bits = 0;
+            let mut out = Vec::new();
+            loop {
+                match JxlDecoderProcessInput(dec) {
+                    JxlDecoderStatus::BasicInfo => {
+                        let mut info = std::mem::MaybeUninit::<JxlBasicInfo>::uninit();
+                        assert_eq!(
+                            JxlDecoderGetBasicInfo(dec, info.as_mut_ptr()),
+                            JxlDecoderStatus::Success
+                        );
+                        let info = info.assume_init();
+                        bits = info.bits_per_sample;
+                        out = vec![0u16; (info.xsize * info.ysize * 3) as usize];
+                    }
+                    JxlDecoderStatus::NeedImageOutBuffer => {
+                        assert_eq!(
+                            JxlDecoderSetImageOutBuffer(
+                                dec,
+                                &format,
+                                out.as_mut_ptr().cast(),
+                                out.len() * 2,
+                            ),
+                            JxlDecoderStatus::Success
+                        );
+                    }
+                    JxlDecoderStatus::FullImage => {}
+                    JxlDecoderStatus::Success => break,
+                    s => panic!("decode failed: {s:?}"),
+                }
+            }
+            JxlDecoderDestroy(dec);
+            (bits, out)
+        }
+    }
+
+    #[test]
+    fn full_range_ten_bit_samples_round_trip_at_ten_bits() {
+        const TEN_BIT_MAX: u32 = 1023;
+        let pixels: Vec<u16> = (0..=TEN_BIT_MAX)
+            .flat_map(|v| [v, TEN_BIT_MAX - v, v / 2])
+            .map(|v| ((v * 65535 + 512) / TEN_BIT_MAX) as u16)
+            .collect();
+        let img = ImageFrame {
+            width: TEN_BIT_MAX + 1,
+            height: 1,
+            bit_depth: 10,
+            has_alpha: false,
+            alpha_premultiplied: false,
+            pixels: Pixels::U16(pixels.clone()),
+        };
+        let jxl = encode_image(
+            &img,
+            &ColorDesc::default(),
+            &MetaBoxes::default(),
+            Orientation::new(1),
+            &crate::domain::Hdr::default(),
+            &settings(),
+            None,
+        )
+        .unwrap();
+        let (bits, decoded) = decode_u16(&jxl);
+        assert_eq!(bits, 10);
+        assert_eq!(decoded, pixels);
+    }
+
+    fn encode_rgb16_frame(pixels: Vec<u16>) -> Vec<u8> {
+        let img = ImageFrame {
+            width: (pixels.len() / 3) as u32,
+            height: 1,
+            bit_depth: 16,
+            has_alpha: false,
+            alpha_premultiplied: false,
+            pixels: Pixels::U16(pixels),
+        };
+        encode_image(
+            &img,
+            &ColorDesc::default(),
+            &MetaBoxes::default(),
+            Orientation::new(1),
+            &crate::domain::Hdr::default(),
+            &settings(),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn upsampled_eight_bit_samples_are_stored_at_eight_bits() {
+        let pixels: Vec<u16> = (0..=255u16)
+            .flat_map(|v| [v, 255 - v, v / 2])
+            .map(|v| v * 257)
+            .collect();
+        let (bits, decoded) = decode_u16(&encode_rgb16_frame(pixels.clone()));
+        assert_eq!(bits, 8);
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn one_true_sixteen_bit_sample_keeps_sixteen_bits() {
+        let mut pixels: Vec<u16> = (0..=255u16)
+            .flat_map(|v| [v, v, v])
+            .map(|v| v * 257)
+            .collect();
+        pixels[100] += 1;
+        let (bits, decoded) = decode_u16(&encode_rgb16_frame(pixels.clone()));
+        assert_eq!(bits, 16);
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn thread_count_does_not_change_the_output() {
+        const SIDE: u32 = 600;
+        let pixels: Vec<u8> = (0..SIDE * SIDE * 3).map(|i| (i * 7 % 251) as u8).collect();
+        let img = ImageFrame {
+            width: SIDE,
+            height: SIDE,
+            bit_depth: 8,
+            has_alpha: false,
+            alpha_premultiplied: false,
+            pixels: Pixels::U8(pixels),
+        };
+        let encode = |threads| {
+            encode_image(
+                &img,
+                &ColorDesc::default(),
+                &MetaBoxes::default(),
+                Orientation::new(1),
+                &crate::domain::Hdr::default(),
+                &EncodeSettings {
+                    threads,
+                    ..settings()
+                },
+                None,
+            )
+            .unwrap()
+        };
+        assert_eq!(encode(1), encode(4));
     }
 
     #[test]

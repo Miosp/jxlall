@@ -67,7 +67,7 @@ pub fn encode_gain_map_gray(
     gray: &[u8],
     settings: &EncodeSettings,
 ) -> Result<Vec<u8>, EncodeError> {
-    let e = Enc::new()?;
+    let e = Enc::new(settings.threads)?;
     unsafe {
         let mut bi = std::mem::MaybeUninit::<JxlBasicInfo>::uninit();
         JxlEncoderInitBasicInfo(bi.as_mut_ptr());

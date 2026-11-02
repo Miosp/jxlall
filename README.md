@@ -2,7 +2,7 @@
 
 Converts a photo library to JPEG XL, keeping pixels, color profiles,
 EXIF/XMP and HDR gain maps wherever the format allows. Single binary,
-converts files in parallel.
+uses every core whether you convert one photo or a whole library.
 
 ## Install
 
@@ -101,10 +101,11 @@ jxlall [OPTIONS] [INPUTS]...
   -o, --output <DIR>       output directory, mirrors the input tree (default: next to sources)
   -r, --recursive          descend into subdirectories
   -p, --pattern <PAT>      extensions to scan, `|`-separated (default: all supported)
-  -e, --effort <1..=10>    encoder effort (default 7)
+  -e, --effort <1..=10>    encoder effort (default 4 with -d 0, otherwise 7)
   -d, --distance <F32>     lossy distance for pixel inputs (default 0 = lossless)
       --force-lossy-jpeg   re-encode JPEG pixels instead of recompressing
-  -j, --jobs <N>           parallel conversions (default: CPU count)
+  -j, --jobs <N>           files converted at once, sharing all CPU cores
+                           (default: CPU count)
       --delete-originals   delete sources after successful conversion
       --add-noise          add film grain from the source ISO (lossy only;
                            JPEGs also need --force-lossy-jpeg)

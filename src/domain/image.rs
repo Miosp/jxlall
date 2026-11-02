@@ -22,8 +22,9 @@ impl Pixels {
 pub struct ImageFrame {
     pub width: u32,
     pub height: u32,
-    /// Significant bits per sample (8, 10, 12, 16, 32). N-bit samples are
-    /// left-aligned in their storage type per JXL convention.
+    /// Significant bits per sample (8, 10, 12, 16, 32). N-bit samples span
+    /// the full range of their storage type, as libjxl expects: it rounds
+    /// them back to N bits.
     pub bit_depth: u8,
     pub has_alpha: bool,
     /// Color samples are premultiplied by alpha (TIFF associated alpha).

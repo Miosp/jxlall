@@ -13,7 +13,7 @@ use crate::domain::{Decoded, DecodedImage, ImageFrame, Pixels};
 
 const MIN_TILE: usize = 64;
 const U8_MAX: f32 = 255.0;
-const U16_BITS: u32 = 16;
+const U16_MAX: f32 = 65535.0;
 
 const GPU_TILE: usize = 512;
 /// Faster per output pixel than 512 px on the measured CPU.
@@ -170,12 +170,6 @@ fn samples_per_pixel(frame: &ImageFrame) -> usize {
     CHANNELS + usize::from(frame.has_alpha)
 }
 
-/// Shift and top value of N-bit samples left-aligned in 16 bits.
-fn u16_layout(bit_depth: u8) -> (u32, f32) {
-    let depth = u32::from(bit_depth).clamp(1, U16_BITS);
-    (U16_BITS - depth, ((1u32 << depth) - 1) as f32)
-}
-
 fn fill_tile(
     frame: &ImageFrame,
     plan: &TilePlan,
@@ -184,10 +178,7 @@ fn fill_tile(
 ) -> Result<(), String> {
     match &frame.pixels {
         Pixels::U8(v) => fill_from(v, frame, plan, tile, out, |s| f32::from(s) / U8_MAX),
-        Pixels::U16(v) => {
-            let (shift, top) = u16_layout(frame.bit_depth);
-            fill_from(v, frame, plan, tile, out, |s| f32::from(s >> shift) / top);
-        }
+        Pixels::U16(v) => fill_from(v, frame, plan, tile, out, |s| f32::from(s) / U16_MAX),
         Pixels::F32(_) => return Err("internal: float frame reached the model".into()),
     }
     Ok(())
@@ -231,13 +222,9 @@ fn is_neutral(frame: &ImageFrame) -> bool {
 /// Write interleaved RGB back, leaving any alpha samples alone.
 fn store(frame: &mut ImageFrame, rgb: &[f32]) -> Result<(), String> {
     let stride = samples_per_pixel(frame);
-    let bit_depth = frame.bit_depth;
     match &mut frame.pixels {
         Pixels::U8(v) => store_into(v, stride, rgb, |s| (s * U8_MAX).round() as u8),
-        Pixels::U16(v) => {
-            let (shift, top) = u16_layout(bit_depth);
-            store_into(v, stride, rgb, |s| ((s * top).round() as u16) << shift);
-        }
+        Pixels::U16(v) => store_into(v, stride, rgb, |s| (s * U16_MAX).round() as u16),
         Pixels::F32(_) => return Err("internal: float frame reached the model".into()),
     }
     Ok(())
@@ -340,12 +327,11 @@ mod tests {
     }
 
     #[test]
-    fn identity_keeps_left_aligned_u16_at_every_depth() {
+    fn identity_keeps_full_range_u16_at_every_depth() {
         for depth in [10u8, 12, 16] {
-            let shift = 16 - u32::from(depth);
             let max = (1u32 << depth) - 1;
             let pixels: Vec<u16> = (0..3 * 80 * 70u32)
-                .map(|i| ((i * 37 % (max + 1)) << shift) as u16)
+                .map(|i| ((i * 37 % (max + 1)) * 65535 / max) as u16)
                 .collect();
             let mut f = frame(Pixels::U16(pixels.clone()), depth, false, 80, 70);
             restore_fresh(&mut f, 64, &mut identity).unwrap();
