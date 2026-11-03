@@ -10,7 +10,7 @@ use ort::environment::Environment;
 use ort::session::{Session, SessionInputValue};
 use ort::value::TensorRef;
 
-use super::artifacts::{self, DIRECTML_DLL, Plugin, Remote};
+use super::artifacts::{self, Plugin, Remote};
 use super::backend::{self, Backend, BackendChoice};
 use super::{Input, TensorData, fetch};
 
@@ -106,12 +106,6 @@ fn environment() -> Result<&'static Environment, String> {
 fn open(env: &Environment, model: &Path, backend: Backend) -> Result<Session, String> {
     match backend {
         Backend::Cpu => open_cpu(env, model).map_err(|e| e.to_string()),
-        Backend::Directml => {
-            let archive = artifacts::directml(ARCH).ok_or("no DirectML build for this platform")?;
-            let dir = fetch::ensure_archive(archive)?;
-            preload(&dir.join(DIRECTML_DLL))?;
-            open_directml(env, model).map_err(|e| e.to_string())
-        }
         Backend::Webgpu | Backend::TensorrtRtx => {
             let plugin =
                 artifacts::plugin(backend, OS, ARCH).ok_or("no plugin for this platform")?;
@@ -122,15 +116,6 @@ fn open(env: &Environment, model: &Path, backend: Backend) -> Result<Session, St
 
 fn open_cpu(env: &Environment, model: &Path) -> ort::Result<Session> {
     Session::builder(env)?.commit_from_file(model)
-}
-
-fn open_directml(env: &Environment, model: &Path) -> ort::Result<Session> {
-    Session::builder(env)?
-        // DirectML rejects parallel execution and memory patterns.
-        .with_parallel_execution(false)?
-        .with_memory_pattern(false)?
-        .with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()])?
-        .commit_from_file(model)
 }
 
 fn open_plugin(env: &Environment, model: &Path, plugin: &Plugin) -> Result<Session, String> {

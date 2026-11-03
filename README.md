@@ -76,14 +76,13 @@ NVIDIA where applicable.** `--ai-backend cpu` limits that to the ONNX Runtime co
 | Platform | `auto` order |
 |---|---|
 | Linux x86-64, arm64 (`gnu` builds) | TensorRT RTX, WebGPU, CPU |
-| Windows x86-64, arm64 | TensorRT RTX, DirectML, WebGPU, CPU |
+| Windows x86-64, arm64 | TensorRT RTX, WebGPU, CPU |
 | macOS arm64 | WebGPU, CPU |
 | Linux `musl`, macOS x86-64 | not available, these builds have no `--dejpeg` or `--iqa` |
 
 TensorRT RTX is only tried when an NVIDIA GPU is detected. It needs an RTX GPU
 (GeForce RTX 30 series or newer) and a current driver, and downloads about 100-150
-MB. On Windows, reaching the DirectML step downloads about 200 MB once; pick
-`--ai-backend webgpu` to skip it. Windows also needs the Visual C++ runtime.
+MB. Windows also needs the Visual C++ runtime.
 
 Scores can differ slightly between backends. Artifact removal takes minutes per photo
 on CPU and seconds on a discrete GPU.
@@ -113,7 +112,7 @@ jxlall [OPTIONS] [INPUTS]...
       --dejpeg             remove JPEG artifacts from JPEG inputs
       --dejpeg-all         with --dejpeg: process every input
       --iqa                rate each photo (see Quality rating)
-      --ai-backend <B>     auto, tensorrt-rtx, directml, webgpu or cpu (default auto)
+      --ai-backend <B>     auto, tensorrt-rtx, webgpu or cpu (default auto)
       --keep-going         continue after errors
       --dry-run            list what would be converted
   -v, --verbose            log each file's details and timings
@@ -179,5 +178,5 @@ The source code is MIT. A built binary is not: it statically links `heic`,
 binary means following AGPL-3.0 terms.
 
 `--dejpeg` and `--iqa` download ONNX Runtime (MIT), their models (Apache-2.0) and,
-when those backends are used, DirectML and NVIDIA TensorRT RTX under their own
-licenses, from their publishers at run time. None of them are part of the binary.
+when that backend is used, NVIDIA TensorRT RTX under its own license, from their
+publishers at run time. None of them are part of the binary.
