@@ -114,7 +114,7 @@ struct Args {
     #[arg(long, value_enum, default_value_t = BackendChoice::Auto)]
     ai_backend: BackendChoice,
 
-    /// Verbose per-file logging.
+    /// Log each file's details and timings, one line per step.
     #[arg(short, long)]
     verbose: bool,
 }

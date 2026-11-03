@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use compio::io::AsyncWriteAtExt;
 
@@ -18,8 +19,9 @@ use crate::cli::RunOptions;
 use crate::domain::{Decoded, DecodedImage, Rating};
 use crate::encode::{EncodeError, EncodeSettings, NoiseStrength};
 use crate::inputs::InputFile;
+use crate::progress::{Progress, Stage};
 use crate::sniff::Format;
-use crate::stats::{Bytes, Stats};
+use crate::stats::{Bytes, Converted, Elapsed, Stats, percent_of, plural};
 
 /// Reserved-output registry shared by all tasks (the runtime is
 /// single-threaded). Page-derived names are claimed at write time, so both
@@ -59,6 +61,12 @@ fn claim_key(path: &Path) -> PathBuf {
     key
 }
 
+/// What the final report needs from a finished run.
+pub struct RunSummary {
+    pub elapsed: Duration,
+    pub settings: String,
+}
+
 /// Convert `files` with at most `opts.jobs` conversions in flight.
 ///
 /// Returns `Err` only when the async driver itself cannot start; per-file
@@ -71,11 +79,12 @@ pub fn run(
     stats: Arc<Stats>,
     restorer: Option<Arc<Restorer>>,
     rater: Option<Arc<Rater>>,
-) -> Result<(), String> {
+) -> Result<RunSummary, String> {
     let jobs = opts.jobs;
     let keep_going = opts.keep_going;
     let total = files.len();
     opts.settings.threads = threads_per_file(crate::cli::available_cores(), jobs, total);
+    let settings = describe_settings(&opts.settings, jobs.min(total));
     let opts = Arc::new(opts);
     // Reserve output paths up front (inputs are sorted ⇒ deterministic
     // naming) so same-stem inputs from different formats cannot overwrite
@@ -86,9 +95,26 @@ pub fn run(
     let claimed: Claimed = Rc::new(RefCell::new(
         files.iter().map(|f| claim_key(&f.path)).collect(),
     ));
+    let sizes: Vec<u64> = files
+        .iter()
+        .map(|f| std::fs::metadata(&f.path).map_or(0, |m| m.len()))
+        .collect();
+    let total_bytes = sizes.iter().sum();
+    if opts.verbose {
+        log_line!(
+            "converting {total} {} ({}): {settings}",
+            plural(total as u64),
+            Bytes(total_bytes)
+        );
+    }
+    let runtime = compio::runtime::Runtime::new().map_err(|e| format!("runtime init: {e}"))?;
+    let started = Instant::now();
+    let progress = Arc::new(Progress::start(total, total_bytes));
     let tasks: Vec<Task> = files
         .into_iter()
-        .map(|f| {
+        .zip(sizes)
+        .enumerate()
+        .map(|(id, (f, size))| {
             let name = OutputName::new(&f.path, opts.output.as_deref(), f.root.as_deref());
             let dst = claim(&mut claimed.borrow_mut(), |n| name.candidate(n));
             Task {
@@ -100,11 +126,12 @@ pub fn run(
                 restorer: restorer.clone(),
                 rater: rater.clone(),
                 claimed: Rc::clone(&claimed),
-                total,
+                id,
+                size,
+                progress: Arc::clone(&progress),
             }
         })
         .collect();
-    let runtime = compio::runtime::Runtime::new().map_err(|e| format!("runtime init: {e}"))?;
     runtime.block_on(async move {
         // `jobs` workers pull from one queue, so a slow file only occupies
         // its own slot.
@@ -113,6 +140,7 @@ pub fn run(
             .map(|_| {
                 let queue = Rc::clone(&queue);
                 let stats = Arc::clone(&stats);
+                let progress = Arc::clone(&progress);
                 compio::runtime::spawn(async move {
                     loop {
                         if !keep_going && stats.failed() > 0 {
@@ -121,11 +149,13 @@ pub fn run(
                         let Some(task) = queue.borrow_mut().next() else {
                             break;
                         };
+                        let (id, path) = (task.id, task.path.clone());
                         if let Err(e) = compio::runtime::spawn(task.process()).await {
                             // Worker panicked (decoder bug): count it so the
                             // run fails loudly instead of exiting successfully.
-                            eprintln!("error: worker panicked: {e}");
-                            stats.record_fail();
+                            log_line!("error: {}: worker panicked: {e}", path.display());
+                            stats.record_fail(&path, format!("worker panicked: {e}"));
+                            progress.finish_file(id, false);
                         }
                     }
                 })
@@ -136,11 +166,71 @@ pub fn run(
             // cannot panic.
             let _ = w.await;
         }
-        if !opts.verbose {
-            eprintln!();
-        }
+        progress.finish();
     });
-    Ok(())
+    Ok(RunSummary {
+        elapsed: started.elapsed(),
+        settings,
+    })
+}
+
+/// `lossless, effort 4; 8 files at once, 2 threads each`
+fn describe_settings(settings: &EncodeSettings, concurrent: usize) -> String {
+    let threads = settings.threads;
+    let threads = format!(
+        "{threads} {}",
+        if threads == 1 { "thread" } else { "threads" }
+    );
+    let parallelism = if concurrent == 1 {
+        threads
+    } else {
+        format!("{concurrent} files at once, {threads} each")
+    };
+    let quality = if settings.distance.is_lossless() {
+        describe_quality(settings)
+    } else {
+        // Recompressed JPEGs ignore the distance.
+        format!("{} for pixels", describe_quality(settings))
+    };
+    format!(
+        "{quality}, effort {}; {parallelism}",
+        settings.effort.value()
+    )
+}
+
+fn describe_quality(settings: &EncodeSettings) -> String {
+    if settings.distance.is_lossless() {
+        "lossless".into()
+    } else {
+        format!("distance {}", settings.distance.get())
+    }
+}
+
+/// `7500x5600, 10-bit RGB, ICC, EXIF, XMP, gain map, orientation 6`
+fn describe_image(img: &DecodedImage) -> String {
+    let frame = &img.frame;
+    let channels = if frame.has_alpha { "RGBA" } else { "RGB" };
+    let mut parts = vec![format!(
+        "{}x{}, {}-bit {channels}",
+        frame.width, frame.height, frame.bit_depth
+    )];
+    let extras = [
+        (img.color.icc.is_some(), "ICC"),
+        (img.color.cicp.is_some(), "CICP"),
+        (img.meta.exif.is_some(), "EXIF"),
+        (img.meta.xmp.is_some(), "XMP"),
+        (img.gain_map.is_some(), "gain map"),
+    ];
+    parts.extend(
+        extras
+            .into_iter()
+            .filter(|(present, _)| *present)
+            .map(|(_, name)| name.to_string()),
+    );
+    if img.orientation.get() > 1 {
+        parts.push(format!("orientation {}", img.orientation.get()));
+    }
+    parts.join(", ")
 }
 
 /// libjxl threads per file, sharing the cores between concurrent conversions.
@@ -159,7 +249,9 @@ struct Task {
     restorer: Option<Arc<Restorer>>,
     rater: Option<Arc<Rater>>,
     claimed: Claimed,
-    total: usize,
+    id: usize,
+    size: u64,
+    progress: Arc<Progress>,
 }
 
 impl Task {
@@ -173,49 +265,115 @@ impl Task {
             restorer,
             rater,
             claimed,
-            total,
+            id,
+            size,
+            progress,
         } = self;
         let verbose = opts.verbose;
-        let result = convert_file(&path, &name, &dst, &claimed, &opts, restorer, rater).await;
+        let started = Instant::now();
+        let display_name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        progress.begin(id, size, display_name);
+        let tracker = FileTracker {
+            id,
+            progress: Arc::clone(&progress),
+        };
+        let result = convert_file(
+            &path,
+            &name,
+            &dst,
+            &claimed,
+            &opts,
+            Models { restorer, rater },
+            tracker,
+        )
+        .await;
         match result {
-            Ok((n_in, n_out, written)) => {
+            Ok(file) => {
+                let mut source_deleted = false;
+                let mut source_kept = opts.delete_originals;
                 // Last line of defence: never remove a source that is the
                 // same file as an output, however it was spelled.
                 if opts.delete_originals {
-                    if !written.iter().all(|w| is_distinct_file(&path, w)) {
-                        eprintln!(
+                    if !file.written.iter().all(|w| is_distinct_file(&path, w)) {
+                        notice!(
                             "warning: {}: not deleting source: cannot confirm outputs are separate files",
                             path.display()
                         );
                     } else if let Err(e) = name.sync_dirs().await {
                         // Outputs are fine, just not provably durable.
-                        eprintln!(
+                        notice!(
                             "warning: {}: not deleting source: sync output dir: {e}",
                             path.display()
                         );
                     } else if let Err(e) = compio::fs::remove_file(&path).await {
-                        eprintln!("warning: {}: delete source: {e}", path.display());
+                        notice!("warning: {}: delete source: {e}", path.display());
+                    } else {
+                        source_deleted = true;
+                        source_kept = false;
                     }
                 }
-                stats.record_ok(n_in, n_out);
+                let elapsed = started.elapsed();
                 if verbose {
-                    eprintln!(
-                        "converted {} ({} -> {})",
+                    if source_deleted {
+                        log_line!("{}: deleted source", path.display());
+                    }
+                    log_line!(
+                        "converted {} ({} -> {}, {:.1}%) in {}",
                         path.display(),
-                        Bytes(n_in),
-                        Bytes(n_out)
+                        Bytes(file.bytes_in),
+                        Bytes(file.bytes_out),
+                        percent_of(file.bytes_out, file.bytes_in),
+                        Elapsed(elapsed)
                     );
                 }
+                progress.finish_file(id, true);
+                stats.record_ok(Converted {
+                    path,
+                    format: file.format.name(),
+                    bytes_in: file.bytes_in,
+                    bytes_out: file.bytes_out,
+                    outputs: file.written.len(),
+                    elapsed,
+                    source_deleted,
+                    source_kept,
+                });
             }
             Err(e) => {
-                stats.record_fail();
-                eprintln!("error: {}: {e}", path.display());
+                log_line!("error: {}: {e}", path.display());
+                progress.finish_file(id, false);
+                stats.record_fail(&path, e);
             }
         }
-        if !opts.verbose {
-            eprint!("\r{}/{}          ", stats.done(), total);
-        }
     }
+}
+
+/// Optional AI models a conversion runs its images through.
+struct Models {
+    restorer: Option<Arc<Restorer>>,
+    rater: Option<Arc<Rater>>,
+}
+
+/// One file's handle on the progress bar.
+struct FileTracker {
+    id: usize,
+    progress: Arc<Progress>,
+}
+
+impl FileTracker {
+    fn stage(&self, stage: Stage) {
+        self.progress.set_stage(self.id, stage);
+    }
+}
+
+/// A file written out, before the source is dealt with.
+struct WrittenFile {
+    format: Format,
+    bytes_in: u64,
+    bytes_out: u64,
+    written: Vec<PathBuf>,
 }
 
 /// Unix: same device and inode. Elsewhere: same canonical path, so hard
@@ -245,12 +403,13 @@ async fn convert_file(
     dst: &Path,
     claimed: &Claimed,
     opts: &RunOptions,
-    restorer: Option<Arc<Restorer>>,
-    rater: Option<Arc<Rater>>,
-) -> Result<(u64, u64, Vec<PathBuf>), String> {
+    models: Models,
+    tracker: FileTracker,
+) -> Result<WrittenFile, String> {
     let verbose = opts.verbose;
     let force_lossy_jpeg = opts.force_lossy_jpeg;
     let settings = &opts.settings;
+    let read_started = Instant::now();
     let data = compio::fs::read(path)
         .await
         .map_err(|e| format!("read: {e}"))?;
@@ -258,8 +417,15 @@ async fn convert_file(
 
     let format = crate::sniff::sniff(&data).ok_or_else(|| "unrecognized format".to_string())?;
     if verbose {
-        eprintln!("converting {}: format {format:?}", path.display());
+        log_line!(
+            "{}: read {} of {} in {}",
+            path.display(),
+            Bytes(n_in),
+            format.name(),
+            Elapsed(read_started.elapsed())
+        );
     }
+    let tracker = Arc::new(tracker);
 
     // Arc: decode needs the bytes on a blocking thread without a copy;
     // the JPEG passthrough shares this same buffer into the encoder.
@@ -268,13 +434,16 @@ async fn convert_file(
         let data = Arc::clone(&data);
         let path = path.to_path_buf();
         let settings = *settings;
+        let tracker = Arc::clone(&tracker);
         compio::runtime::spawn_blocking(move || {
             let ctx = FileContext {
                 settings: &settings,
                 path: &path,
-                restorer: restorer.as_deref(),
-                rater: rater.as_deref(),
+                restorer: models.restorer.as_deref(),
+                rater: models.rater.as_deref(),
                 verbose,
+                tracker: &tracker,
+                page: None,
             };
             encode_all(&data, format, force_lossy_jpeg, &ctx)
         })
@@ -287,17 +456,59 @@ async fn convert_file(
 
     // The source is about to be deleted: make the output durable first.
     let durable = opts.delete_originals;
-    let (n_out, written) = write_outputs(name, dst, outputs, claimed, durable).await?;
-    Ok((n_in, n_out, written))
+    tracker.stage(Stage::Writing);
+    let write_started = Instant::now();
+    let (bytes_out, written) = write_outputs(name, dst, outputs, claimed, durable).await?;
+    if verbose {
+        let names: Vec<_> = written.iter().map(|p| p.display().to_string()).collect();
+        log_line!(
+            "{}: wrote {} in {}{}",
+            path.display(),
+            names.join(", "),
+            Elapsed(write_started.elapsed()),
+            if durable { ", file synced" } else { "" }
+        );
+    }
+    Ok(WrittenFile {
+        format,
+        bytes_in: n_in,
+        bytes_out,
+        written,
+    })
 }
 
 /// Per-file inputs shared by the encode helpers.
+#[derive(Clone, Copy)]
 struct FileContext<'a> {
     settings: &'a EncodeSettings,
     path: &'a Path,
     restorer: Option<&'a Restorer>,
     rater: Option<&'a Rater>,
     verbose: bool,
+    tracker: &'a FileTracker,
+    /// 1-based page of a multi-page source.
+    page: Option<usize>,
+}
+
+impl FileContext<'_> {
+    /// Verbose line about this file; `line` runs only in verbose mode.
+    fn log(&self, line: impl FnOnce() -> String) {
+        if self.verbose {
+            let page = self.page.map(|p| format!("page {p}: ")).unwrap_or_default();
+            log_line!("{}: {page}{}", self.path.display(), line());
+        }
+    }
+
+    fn log_encoded(&self, jxl: &[u8], how: &str, started: Instant) {
+        self.log(|| {
+            format!(
+                "encoded to {} ({how}, effort {}) in {}",
+                Bytes(jxl.len() as u64),
+                self.settings.effort.value(),
+                Elapsed(started.elapsed())
+            )
+        });
+    }
 }
 
 fn encode_all(
@@ -306,12 +517,28 @@ fn encode_all(
     force_lossy_jpeg: bool,
     ctx: &FileContext,
 ) -> Result<Vec<Vec<u8>>, String> {
+    ctx.tracker.stage(Stage::Decoding);
+    let decode_started = Instant::now();
     let decoded = crate::decode::decode(data, format)?;
-    let mut out = Vec::with_capacity(decoded.len());
-    for d in decoded {
+    if decoded.iter().any(|d| matches!(d, Decoded::Image(_))) {
+        ctx.log(|| format!("decoded in {}", Elapsed(decode_started.elapsed())));
+    }
+    let pages = decoded.len();
+    let mut out = Vec::with_capacity(pages);
+    for (index, d) in decoded.into_iter().enumerate() {
+        let ctx = &FileContext {
+            page: (pages > 1).then_some(index + 1),
+            ..*ctx
+        };
         let d = match ctx.restorer {
-            Some(restorer) => restore_page(d, restorer, ctx.path)?,
-            None => d,
+            Some(restorer) if crate::ai::dejpeg::selects(&d, restorer.all()) => {
+                ctx.tracker.stage(Stage::Restoring);
+                let started = Instant::now();
+                let restored = restore_page(d, restorer, ctx.path)?;
+                ctx.log(|| format!("artifact removal took {}", Elapsed(started.elapsed())));
+                restored
+            }
+            _ => d,
         };
         let jxl = match d {
             Decoded::Jpeg(jpeg) if force_lossy_jpeg => encode_pixel_from_jpeg(&jpeg, ctx)?,
@@ -324,17 +551,14 @@ fn encode_all(
 }
 
 /// A selected JPEG leaves the lossless path, since its pixels are about to
-/// change. A page that is not selected passes through untouched.
+/// change.
 fn restore_page(page: Decoded, restorer: &Restorer, path: &Path) -> Result<Decoded, String> {
-    if !crate::ai::dejpeg::selects(&page, restorer.all()) {
-        return Ok(page);
-    }
     let mut img = match page {
         Decoded::Jpeg(jpeg) => match crate::format::jpeg::decode(&jpeg)? {
             Decoded::Image(img) => {
                 let xmp = img.meta.xmp.as_deref();
                 if xmp.is_some_and(|x| crate::ai::dejpeg::xmp_declares_gain_map(x)) {
-                    eprintln!(
+                    notice!(
                         "note: {}: gain map dropped, --dejpeg keeps only the base image",
                         path.display()
                     );
@@ -359,10 +583,14 @@ fn encode_jpeg(jpeg: &[u8], ctx: &FileContext) -> Result<Vec<u8>, String> {
         Some(_) => rate(ctx, &decode_jpeg_pixels(jpeg)?)?,
         None => None,
     };
+    let started = Instant::now();
     match encode_jbrd(jpeg, ctx, rating.as_ref()) {
-        Ok(jxl) => Ok(jxl),
+        Ok(jxl) => {
+            ctx.log_encoded(&jxl, "JPEG recompression", started);
+            Ok(jxl)
+        }
         Err(e) => {
-            eprintln!(
+            notice!(
                 "note: {}: jbrd rejected ({e}); re-encoding pixels",
                 ctx.path.display()
             );
@@ -379,6 +607,7 @@ fn encode_jbrd(
     ctx: &FileContext,
     rating: Option<&Rating>,
 ) -> Result<Vec<u8>, EncodeError> {
+    ctx.tracker.stage(Stage::Encoding);
     let Some(rating) = rating else {
         return crate::encode::encode_jpeg(jpeg, ctx.settings, None);
     };
@@ -393,7 +622,7 @@ fn encode_jbrd(
             crate::encode::encode_jpeg(&edited, ctx.settings, None)
         }
         Err(e) => {
-            eprintln!("note: {}: rating not stored ({e})", ctx.path.display());
+            notice!("note: {}: rating not stored ({e})", ctx.path.display());
             crate::encode::encode_jpeg(jpeg, ctx.settings, None)
         }
     }
@@ -406,8 +635,10 @@ fn rate(ctx: &FileContext, img: &DecodedImage) -> Result<Option<Rating>, String>
     let Some(rater) = ctx.rater else {
         return Ok(None);
     };
+    ctx.tracker.stage(Stage::Rating);
+    let started = Instant::now();
     let rating = rater.rate(&img.frame, img.orientation)?;
-    log_rating(ctx, &rating);
+    log_rating(ctx, &rating, started.elapsed());
     Ok(Some(rating))
 }
 
@@ -422,6 +653,9 @@ fn encode_pixels(
     rating: Option<Rating>,
 ) -> Result<Vec<u8>, String> {
     let settings = ctx.settings;
+    ctx.tracker.stage(Stage::Encoding);
+    ctx.log(|| format!("pixels: {}", describe_image(&img)));
+    let started = Instant::now();
     // Consumed by value: metadata boxes and pixels move through, no clone.
     let DecodedImage {
         frame,
@@ -441,7 +675,7 @@ fn encode_pixels(
         };
         match xmp {
             Ok(xmp) => meta.xmp = Some(Arc::new(xmp)),
-            Err(e) => eprintln!("note: {}: rating not stored ({e})", ctx.path.display()),
+            Err(e) => notice!("note: {}: rating not stored ({e})", ctx.path.display()),
         }
     }
     // Only lossy pixel frames get grain (see encode_image); cli notes once.
@@ -451,37 +685,39 @@ fn encode_pixels(
         .and_then(|strength| {
             photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), strength, ctx.path)
         });
-    crate::encode::encode_image(&frame, &color, &meta, orientation, &hdr, settings, iso)
-        .map_err(|e| e.to_string())
+    let jxl = crate::encode::encode_image(&frame, &color, &meta, orientation, &hdr, settings, iso)
+        .map_err(|e| e.to_string())?;
+    ctx.log_encoded(&jxl, &describe_quality(settings), started);
+    Ok(jxl)
 }
 
-fn log_rating(ctx: &FileContext, rating: &Rating) {
-    if ctx.verbose {
+fn log_rating(ctx: &FileContext, rating: &Rating, took: Duration) {
+    ctx.log(|| {
         let stars = rating
             .stars
             .map(|s| format!(", {s} stars"))
             .unwrap_or_default();
-        eprintln!(
-            "rated {}: technical {:.4}, aesthetic {:.4}{stars}",
-            ctx.path.display(),
+        format!(
+            "rated technical {:.4}, aesthetic {:.4}{stars} in {}",
             rating.technical.value,
-            rating.aesthetic.value
-        );
-    }
+            rating.aesthetic.value,
+            Elapsed(took)
+        )
+    });
 }
 
 /// libjxl photon-noise ISO for one file: full-frame-equivalent EXIF ISO
 /// scaled by the user's strength. `None` (with a note) without an ISO.
 fn photon_noise_iso(exif: Option<&[u8]>, strength: NoiseStrength, path: &Path) -> Option<f32> {
     let Some(estimate) = exif.and_then(crate::domain::iso_from_exif) else {
-        eprintln!(
+        notice!(
             "note: {}: no ISO in metadata, no grain added",
             path.display()
         );
         return None;
     };
     if estimate.crop.is_none() {
-        eprintln!(
+        notice!(
             "note: {}: no 35 mm-equivalent focal length, ISO {} used without crop correction",
             path.display(),
             estimate.iso
@@ -716,7 +952,7 @@ async fn link_noreplace(tmp: &Path, dst: &Path) -> io::Result<()> {
         Err(_) => return placeholder_noreplace(tmp, dst).await,
     }
     if let Err(e) = compio::fs::remove_file(tmp).await {
-        eprintln!("warning: {}: remove tmp: {e}", tmp.display());
+        notice!("warning: {}: remove tmp: {e}", tmp.display());
     }
     Ok(())
 }

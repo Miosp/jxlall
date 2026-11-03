@@ -109,9 +109,10 @@ pub fn set_color(e: &Enc, c: &ColorChoice) -> Result<(), EncodeError> {
             && (cicp.color_primaries, cicp.transfer_characteristics)
                 != (CICP_UNSPECIFIED, CICP_UNSPECIFIED)
         {
-            eprintln!(
+            notice!(
                 "note: CICP {}/{} has no JXL equivalent, encoding with default color",
-                cicp.color_primaries, cicp.transfer_characteristics
+                cicp.color_primaries,
+                cicp.transfer_characteristics
             );
         }
         if let Some(icc) = c.icc {

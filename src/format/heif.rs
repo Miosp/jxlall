@@ -89,18 +89,18 @@ fn decode_gain_map(
     let g = match heic::DecoderConfig::new().decode_gain_map(data) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("note: gain map decode failed ({e}), converting base image without it");
+            notice!("note: gain map decode failed ({e}), converting base image without it");
             return Ok(None);
         }
     };
     if !gain_map_aligned(source_orientation, (w, h), (g.width, g.height)) {
-        eprintln!("note: gain map orientation differs from the base image, dropped");
+        notice!("note: gain map orientation differs from the base image, dropped");
         return Ok(None);
     }
     match crate::domain::from_heic(g) {
         Ok(g) => Ok(g),
         Err(e) => {
-            eprintln!("note: gain map dropped ({e}), converting base image without it");
+            notice!("note: gain map dropped ({e}), converting base image without it");
             Ok(None)
         }
     }

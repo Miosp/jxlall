@@ -122,7 +122,7 @@ pub fn decode(data: &std::sync::Arc<Vec<u8>>) -> Result<Vec<Decoded>, String> {
 
         let exif = dec.ifd_pointer().and_then(|ifd| {
             super::tiff_exif::minimal_exif(data, ifd.0).unwrap_or_else(|e| {
-                eprintln!("note: malformed TIFF metadata dropped ({e})");
+                notice!("note: malformed TIFF metadata dropped ({e})");
                 None
             })
         });
@@ -367,7 +367,7 @@ fn find_bytes<R: std::io::Read + std::io::Seek>(
     {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("note: unreadable TIFF {what} tag dropped ({e})");
+            notice!("note: unreadable TIFF {what} tag dropped ({e})");
             None
         }
     }

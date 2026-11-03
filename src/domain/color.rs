@@ -40,7 +40,7 @@ impl ColorDesc {
         let icc = match icc {
             Some(p) if icc_header_ok(&p) => Some(p),
             Some(_) => {
-                eprintln!("note: malformed ICC profile dropped, encoding with default color");
+                notice!("note: malformed ICC profile dropped, encoding with default color");
                 None
             }
             None => None,
