@@ -22,7 +22,7 @@ clap = { version = "4", features = ["derive"] }
 ultrahdr-core = { version = "0.6", default-features = false, features = ["std"] }
 roxmltree = "0.21.1"
 rustfft = "6.4"
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-24", "directml"], optional = true }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31"], optional = true }
 libloading = { version = "0.9", optional = true }
 ureq = { version = "3.5", optional = true }
 directories = { version = "6", optional = true }

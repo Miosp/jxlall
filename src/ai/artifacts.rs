@@ -99,68 +99,31 @@ static CORE_MACOS_ARM64: Archive = Archive {
     }],
 };
 
-const DML_CORE_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.24.4/microsoft.ml.onnxruntime.directml.1.24.4.nupkg";
-const DML_CORE_SHA256: &str = "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681";
-const DML_CORE_SIZE: u64 = 12_458_649;
-
 static CORE_WINDOWS_X64: Archive = Archive {
-    id: "onnxruntime-directml-1.24.4-win-x64",
-    url: DML_CORE_URL,
-    sha256: DML_CORE_SHA256,
-    size: DML_CORE_SIZE,
+    id: "onnxruntime-1.31.1-win-x64",
+    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-x64-1.31.1.zip",
+    sha256: "5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c",
+    size: 82_929_944,
     format: ArchiveFormat::Zip,
     files: &[ArchiveFile {
-        entry: "runtimes/win-x64/native/onnxruntime.dll",
+        entry: "onnxruntime-win-x64-1.31.1/lib/onnxruntime.dll",
         name: "onnxruntime.dll",
-        sha256: "e7eedec6a6f26dc39dc948276a75ef6d2bee3fff944d874ceed0bbd3b97bff40",
-        size: 17_328_152,
+        sha256: "cb2fa518b18356617f6f9f460c012501da2819ec7e5c1d80bd8f5de20492db0c",
+        size: 17_253_728,
     }],
 };
 
 static CORE_WINDOWS_ARM64: Archive = Archive {
-    id: "onnxruntime-directml-1.24.4-win-arm64",
-    url: DML_CORE_URL,
-    sha256: DML_CORE_SHA256,
-    size: DML_CORE_SIZE,
+    id: "onnxruntime-1.31.1-win-arm64",
+    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-arm64-1.31.1.zip",
+    sha256: "817f4129073f84f81cde3ff92b1a4e06d007691e7208deed08a8b6d6df143f7f",
+    size: 85_851_069,
     format: ArchiveFormat::Zip,
     files: &[ArchiveFile {
-        entry: "runtimes/win-arm64/native/onnxruntime.dll",
+        entry: "onnxruntime-win-arm64-1.31.1/lib/onnxruntime.dll",
         name: "onnxruntime.dll",
-        sha256: "939fa0be435d253eadd9e394ee94ad6b6ac1878c83b64118bb4bda669eb0e28c",
-        size: 17_546_784,
-    }],
-};
-
-const DIRECTML_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg";
-const DIRECTML_SHA256: &str = "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9";
-const DIRECTML_SIZE: u64 = 202_292_617;
-pub const DIRECTML_DLL: &str = "DirectML.dll";
-
-static DIRECTML_X64: Archive = Archive {
-    id: "directml-1.15.4-win-x64",
-    url: DIRECTML_URL,
-    sha256: DIRECTML_SHA256,
-    size: DIRECTML_SIZE,
-    format: ArchiveFormat::Zip,
-    files: &[ArchiveFile {
-        entry: "bin/x64-win/DirectML.dll",
-        name: DIRECTML_DLL,
-        sha256: "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
-        size: 18_527_776,
-    }],
-};
-
-static DIRECTML_ARM64: Archive = Archive {
-    id: "directml-1.15.4-win-arm64",
-    url: DIRECTML_URL,
-    sha256: DIRECTML_SHA256,
-    size: DIRECTML_SIZE,
-    format: ArchiveFormat::Zip,
-    files: &[ArchiveFile {
-        entry: "bin/arm64-win/DirectML.dll",
-        name: DIRECTML_DLL,
-        sha256: "77b0db83ff903f2323f5caf538499d75af6038bbea23b7959f7d232d9a4ab9d4",
-        size: 18_444_832,
+        sha256: "3ec71b45c71ed057096f4914fddb379a38b9ec813794052b96fec7de81e2ea20",
+        size: 17_507_640,
     }],
 };
 
@@ -474,7 +437,7 @@ pub fn core(os: &str, arch: &str) -> Option<&'static Archive> {
     }
 }
 
-/// Plugin for a backend; DirectML and CPU live in the core and have none.
+/// Plugin for a backend; CPU lives in the core and has none.
 pub fn plugin(backend: Backend, os: &str, arch: &str) -> Option<&'static Plugin> {
     match (backend, os, arch) {
         (Backend::Webgpu, "linux", "x86_64") => Some(&WEBGPU_LINUX_X64),
@@ -486,15 +449,6 @@ pub fn plugin(backend: Backend, os: &str, arch: &str) -> Option<&'static Plugin>
         (Backend::TensorrtRtx, "linux", "aarch64") => Some(&TENSORRT_LINUX_ARM64),
         (Backend::TensorrtRtx, "windows", "x86_64") => Some(&TENSORRT_WINDOWS_X64),
         (Backend::TensorrtRtx, "windows", "aarch64") => Some(&TENSORRT_WINDOWS_ARM64),
-        _ => None,
-    }
-}
-
-/// `DirectML.dll` package for a Windows architecture.
-pub fn directml(arch: &str) -> Option<&'static Archive> {
-    match arch {
-        "x86_64" => Some(&DIRECTML_X64),
-        "aarch64" => Some(&DIRECTML_ARM64),
         _ => None,
     }
 }
@@ -535,7 +489,6 @@ mod tests {
             for &backend in order(os, arch) {
                 match backend {
                     Backend::Cpu => {}
-                    Backend::Directml => assert_archive(directml(arch).unwrap()),
                     Backend::Webgpu | Backend::TensorrtRtx => {
                         let plugin = plugin(backend, os, arch).unwrap();
                         assert_archive(plugin.archive);

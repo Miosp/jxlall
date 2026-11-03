@@ -238,7 +238,6 @@ mod tests {
         for (name, want) in [
             ("auto", BackendChoice::Auto),
             ("tensorrt-rtx", BackendChoice::TensorrtRtx),
-            ("directml", BackendChoice::Directml),
             ("webgpu", BackendChoice::Webgpu),
             ("cpu", BackendChoice::Cpu),
         ] {

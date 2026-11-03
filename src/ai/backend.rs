@@ -10,7 +10,6 @@ const LINUX_PCI_DEVICES: &str = "/sys/bus/pci/devices";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     TensorrtRtx,
-    Directml,
     Webgpu,
     Cpu,
 }
@@ -19,7 +18,6 @@ impl Backend {
     pub fn name(self) -> &'static str {
         match self {
             Self::TensorrtRtx => "tensorrt-rtx",
-            Self::Directml => "directml",
             Self::Webgpu => "webgpu",
             Self::Cpu => "cpu",
         }
@@ -33,8 +31,6 @@ pub enum BackendChoice {
     Auto,
     /// NVIDIA RTX GPUs.
     TensorrtRtx,
-    /// Any DirectX 12 GPU, Windows only.
-    Directml,
     /// Vulkan, DirectX 12 or Metal GPUs.
     Webgpu,
     Cpu,
@@ -45,7 +41,6 @@ impl BackendChoice {
         match self {
             Self::Auto => None,
             Self::TensorrtRtx => Some(Backend::TensorrtRtx),
-            Self::Directml => Some(Backend::Directml),
             Self::Webgpu => Some(Backend::Webgpu),
             Self::Cpu => Some(Backend::Cpu),
         }
@@ -54,10 +49,9 @@ impl BackendChoice {
 
 /// Backends on a platform, most capable first. Empty: no AI support there.
 pub fn order(os: &str, arch: &str) -> &'static [Backend] {
-    use Backend::{Cpu, Directml, TensorrtRtx, Webgpu};
+    use Backend::{Cpu, TensorrtRtx, Webgpu};
     match (os, arch) {
-        ("linux", "x86_64" | "aarch64") => &[TensorrtRtx, Webgpu, Cpu],
-        ("windows", "x86_64" | "aarch64") => &[TensorrtRtx, Directml, Webgpu, Cpu],
+        ("linux" | "windows", "x86_64" | "aarch64") => &[TensorrtRtx, Webgpu, Cpu],
         ("macos", "aarch64") => &[Webgpu, Cpu],
         _ => &[],
     }
@@ -121,13 +115,13 @@ pub fn nvidia_gpu_present() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use Backend::{Cpu, Directml, TensorrtRtx, Webgpu};
+    use Backend::{Cpu, TensorrtRtx, Webgpu};
 
     #[test]
     fn order_per_platform() {
         for arch in ["x86_64", "aarch64"] {
             assert_eq!(order("linux", arch), [TensorrtRtx, Webgpu, Cpu]);
-            assert_eq!(order("windows", arch), [TensorrtRtx, Directml, Webgpu, Cpu]);
+            assert_eq!(order("windows", arch), [TensorrtRtx, Webgpu, Cpu]);
         }
         assert_eq!(order("macos", "aarch64"), [Webgpu, Cpu]);
         assert!(order("macos", "x86_64").is_empty());
@@ -150,10 +144,8 @@ mod tests {
 
     #[test]
     fn explicit_backend_missing_on_the_platform_is_an_error() {
-        let linux = attempts(BackendChoice::Directml, "linux", "x86_64", true);
-        assert!(linux.unwrap_err().contains("directml"));
         let mac = attempts(BackendChoice::TensorrtRtx, "macos", "aarch64", true);
-        assert!(mac.is_err());
+        assert!(mac.unwrap_err().contains("tensorrt-rtx"));
     }
 
     #[test]
