@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use super::Input;
 use super::artifacts::Remote;
 use super::backend::{Backend, BackendChoice};
+use super::{Input, ShapeRange};
 
 const NO_AI_SUPPORT: &str = "this build has no AI support (built without the `ai` feature)";
 
@@ -19,6 +19,7 @@ impl Model {
         _: &str,
         _: &'static Remote,
         _: BackendChoice,
+        _: &[ShapeRange],
         _: impl Fn(&mut Self) -> Result<(), String>,
     ) -> Result<Self, String> {
         Err(NO_AI_SUPPORT.into())
