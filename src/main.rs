@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         }
     };
 
+    progress::set_verbose(opts.verbose);
     let (files, input_errors) = inputs::collect(&opts.inputs, opts.recursive, &opts.pattern);
     if files.is_empty() {
         eprintln!("error: no convertible input files found");

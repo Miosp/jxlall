@@ -4,15 +4,17 @@
 use std::collections::HashSet;
 use std::env::consts::{ARCH, OS};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use ort::environment::Environment;
+use ort::logging::LogLevel;
 use ort::session::{Session, SessionInputValue};
 use ort::value::TensorRef;
 
 use super::artifacts::{self, Plugin, Remote};
 use super::backend::{self, Backend, BackendChoice};
-use super::{Input, TensorData, fetch};
+use super::{Input, ShapeRange, TensorData, fetch, tensorrt_profile_options};
 
 /// Path of a verified auxiliary file, downloading it when needed.
 pub fn ensure_file(spec: &Remote) -> Result<PathBuf, String> {
@@ -29,11 +31,13 @@ impl Model {
     /// Load `spec` on the first working backend for `choice`. `validate` runs
     /// on each candidate, so a backend that loads but cannot run the model is
     /// rejected up front. An explicit backend that fails is an error; `auto`
-    /// moves on with a note. `label` names the model in those messages.
+    /// moves on with a note. `label` names the model in those messages. `shapes`
+    /// bounds the model's dynamic inputs on backends that compile for a range.
     pub fn load(
         label: &str,
         spec: &'static Remote,
         choice: BackendChoice,
+        shapes: &[ShapeRange],
         validate: impl Fn(&mut Self) -> Result<(), String>,
     ) -> Result<Self, String> {
         let nvidia = backend::nvidia_gpu_present();
@@ -42,16 +46,25 @@ impl Model {
         let env = environment()?;
         let mut last_error = String::new();
         for backend in attempts {
-            let candidate = open(env, &path, backend).map(|session| Self { session, backend });
+            let errors_before = RUNTIME_ERRORS.load(Ordering::Relaxed);
+            let candidate =
+                open(env, &path, backend, shapes).map(|session| Self { session, backend });
             let result = candidate.and_then(|mut model| validate(&mut model).map(|()| model));
             match result {
                 Ok(model) => {
-                    eprintln!("{label}: using {} backend", backend.name());
+                    log_line!("{label}: using {} backend", backend.name());
+                    let errors = RUNTIME_ERRORS.load(Ordering::Relaxed) - errors_before;
+                    if errors > 0 {
+                        notice!(
+                            "note: {label}: {} backend logged {errors} errors while loading and may run partly on the CPU; --verbose shows them",
+                            backend.name()
+                        );
+                    }
                     return Ok(model);
                 }
                 Err(e) => {
                     if choice == BackendChoice::Auto {
-                        eprintln!("note: {label}: {} backend unavailable: {e}", backend.name());
+                        log_line!("note: {label}: {} backend unavailable: {e}", backend.name());
                     }
                     last_error = format!("{} backend: {e}", backend.name());
                 }
@@ -96,6 +109,7 @@ fn environment() -> Result<&'static Environment, String> {
         let library = dir.join(core.files[0].name);
         ort::init_from(&library)
             .map_err(|e| e.to_string())?
+            .with_logger(Arc::new(log_runtime_message))
             .build()
             .map_err(|e| e.to_string())
     })
@@ -103,13 +117,43 @@ fn environment() -> Result<&'static Environment, String> {
     .map_err(|e| format!("ONNX Runtime: {e}"))
 }
 
-fn open(env: &Environment, model: &Path, backend: Backend) -> Result<Session, String> {
+/// Errors the runtime has logged. Most are not returned to the caller: nodes a
+/// backend cannot compile fall back to the CPU, with only these as a sign.
+static RUNTIME_ERRORS: AtomicU64 = AtomicU64::new(0);
+
+/// Often hundreds of lines per model, so `Model::load` sums them up in a note and
+/// the lines themselves are for `--verbose`.
+fn log_runtime_message(level: LogLevel, _: &str, _: &str, _: &str, message: &str) {
+    if matches!(level, LogLevel::Error) {
+        RUNTIME_ERRORS.fetch_add(1, Ordering::Relaxed);
+    }
+    if should_log_runtime_message(level, crate::progress::verbose()) {
+        log_line!("onnxruntime: {message}");
+    }
+}
+
+fn should_log_runtime_message(level: LogLevel, verbose: bool) -> bool {
+    match level {
+        LogLevel::Fatal => true,
+        LogLevel::Error | LogLevel::Warning => verbose,
+        LogLevel::Info | LogLevel::Verbose => false,
+    }
+}
+
+fn open(
+    env: &Environment,
+    model: &Path,
+    backend: Backend,
+    shapes: &[ShapeRange],
+) -> Result<Session, String> {
     match backend {
         Backend::Cpu => open_cpu(env, model).map_err(|e| e.to_string()),
         Backend::Webgpu | Backend::TensorrtRtx => {
             let plugin =
                 artifacts::plugin(backend, OS, ARCH).ok_or("no plugin for this platform")?;
-            open_plugin(env, model, plugin)
+            let options = (backend == Backend::TensorrtRtx && !shapes.is_empty())
+                .then(|| tensorrt_profile_options(plugin.ep_name, shapes));
+            open_plugin(env, model, plugin, options.as_deref())
         }
     }
 }
@@ -118,7 +162,12 @@ fn open_cpu(env: &Environment, model: &Path) -> ort::Result<Session> {
     Session::builder(env)?.commit_from_file(model)
 }
 
-fn open_plugin(env: &Environment, model: &Path, plugin: &Plugin) -> Result<Session, String> {
+fn open_plugin(
+    env: &Environment,
+    model: &Path,
+    plugin: &Plugin,
+    options: Option<&[(String, String)]>,
+) -> Result<Session, String> {
     let dir = fetch::ensure_archive(plugin.archive)?;
     for name in plugin.preload {
         preload(&dir.join(name))?;
@@ -133,7 +182,7 @@ fn open_plugin(env: &Environment, model: &Path, plugin: &Plugin) -> Result<Sessi
     }
     let session = || -> ort::Result<Session> {
         Session::builder(env)?
-            .with_devices(ep_devices(), None)?
+            .with_devices(ep_devices(), options)?
             .commit_from_file(model)
     };
     session().map_err(|e| e.to_string())
@@ -161,4 +210,18 @@ fn preload(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))?;
     std::mem::forget(library);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_messages_stay_quiet_without_verbose() {
+        assert!(!should_log_runtime_message(LogLevel::Error, false));
+        assert!(!should_log_runtime_message(LogLevel::Warning, false));
+        assert!(should_log_runtime_message(LogLevel::Fatal, false));
+        assert!(should_log_runtime_message(LogLevel::Error, true));
+        assert!(!should_log_runtime_message(LogLevel::Info, true));
+    }
 }

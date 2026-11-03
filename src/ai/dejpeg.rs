@@ -8,7 +8,7 @@ use super::artifacts::DEJPEG_V2;
 use super::backend::{Backend, BackendChoice};
 use super::runtime::Model;
 use super::tiling::{Blender, CHANNELS, Tile, TilePlan, mirror};
-use super::{Input, TensorData};
+use super::{Input, ShapeRange, TensorData};
 use crate::domain::{Decoded, DecodedImage, ImageFrame, Pixels};
 
 const MIN_TILE: usize = 64;
@@ -44,10 +44,16 @@ struct Engine {
 
 impl Restorer {
     pub fn load(options: DejpegOptions, backend: BackendChoice) -> Result<Self, String> {
-        let model = Model::load("dejpeg", &DEJPEG_V2, backend, |model| {
-            let probe = vec![0.0; CHANNELS * PROBE_TILE * PROBE_TILE];
-            run_tile(model, &probe, PROBE_TILE).map(|_| ())
-        })?;
+        let model = Model::load(
+            "dejpeg",
+            &DEJPEG_V2,
+            backend,
+            &tile_shape_range(),
+            |model| {
+                let probe = vec![0.0; CHANNELS * PROBE_TILE * PROBE_TILE];
+                run_tile(model, &probe, PROBE_TILE).map(|_| ())
+            },
+        )?;
         let tile = if model.backend() == Backend::Cpu {
             CPU_TILE
         } else {
@@ -77,10 +83,24 @@ impl Restorer {
     }
 }
 
+fn tile_shape(size: usize) -> Vec<usize> {
+    vec![1, CHANNELS, size, size]
+}
+
+/// Every size `restore_with_fallback` can reach on a GPU, down from `GPU_TILE`.
+fn tile_shape_range() -> [ShapeRange; 1] {
+    [ShapeRange {
+        input: MODEL_INPUT,
+        min: tile_shape(MIN_TILE),
+        opt: tile_shape(GPU_TILE),
+        max: tile_shape(GPU_TILE),
+    }]
+}
+
 fn run_tile(model: &mut Model, tile: &[f32], size: usize) -> Result<Vec<f32>, String> {
     let input = Input {
         name: MODEL_INPUT,
-        shape: vec![1, CHANNELS, size, size],
+        shape: tile_shape(size),
         data: TensorData::F32(tile),
     };
     model.run(&[input], MODEL_OUTPUT)
@@ -244,8 +264,23 @@ fn store_into<T>(samples: &mut [T], stride: usize, rgb: &[f32], from_unit: impl 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::domain::{ColorDesc, Hdr, MetaBoxes};
     use std::sync::Arc;
+
+    /// The network halves a tile three times, so its sides must divide by this.
+    const TILE_ALIGNMENT: usize = 8;
+
+    #[test]
+    fn every_gpu_tile_fits_the_shape_range_and_the_network() {
+        const { assert!(PROBE_TILE >= MIN_TILE) };
+        let mut tile = GPU_TILE;
+        while tile >= MIN_TILE {
+            assert_eq!(tile % TILE_ALIGNMENT, 0, "{tile}");
+            tile /= 2;
+        }
+        assert_eq!(tile * 2, MIN_TILE);
+    }
 
     fn frame(pixels: Pixels, bit_depth: u8, has_alpha: bool, w: u32, h: u32) -> ImageFrame {
         ImageFrame {

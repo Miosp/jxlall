@@ -1,7 +1,8 @@
 //! Live progress bar and the log lines printed above it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -23,12 +24,27 @@ const UNKNOWN_CLOCK: &str = "--:--";
 
 static BAR: OnceLock<ProgressBar> = OnceLock::new();
 static NOTES: AtomicU64 = AtomicU64::new(0);
+static VERBOSE: AtomicBool = AtomicBool::new(false);
 
-/// Print one line to stderr above the progress bar.
+/// `--verbose`, for code too far from the options to be handed it.
+pub fn set_verbose(verbose: bool) {
+    VERBOSE.store(verbose, Ordering::Relaxed);
+}
+
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
+pub fn verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+
+/// Print one line to stderr above the progress bar. Never panics: this also runs
+/// inside ONNX Runtime's log callback, where a panic aborts the process.
 pub fn print_line(line: std::fmt::Arguments) {
+    let print = || {
+        let _ = writeln!(std::io::stderr(), "{line}");
+    };
     match BAR.get() {
-        Some(bar) => bar.suspend(|| eprintln!("{line}")),
-        None => eprintln!("{line}"),
+        Some(bar) => bar.suspend(print),
+        None => print(),
     }
 }
 
