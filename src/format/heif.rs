@@ -48,7 +48,10 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         } else {
             frame.to_rgb16().map_err(|e| format!("to_rgb16: {e}"))?
         };
-        (Pixels::U16(px), 16, w, h)
+        // Declaring the true depth saves libjxl from coding a sparse 16-bit
+        // range; heic's full-range samples round back to it exactly. The
+        // frame's depth set their scale; the container's may disagree.
+        (Pixels::U16(px), frame.bit_depth, w, h)
     };
 
     let gain_map = decode_gain_map(data, &info, source_orientation, w, h)?;
@@ -119,6 +122,15 @@ fn gain_map_aligned(source: Orientation, (w, h): (u32, u32), (gw, gh): (u32, u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ten_bit_source_keeps_its_depth() {
+        let Decoded::Image(img) = decode(include_bytes!("testdata/ten_bit.heic")).unwrap() else {
+            panic!("expected pixels");
+        };
+        assert_eq!(img.frame.bit_depth, 10);
+        assert!(matches!(img.frame.pixels, Pixels::U16(_)));
+    }
 
     #[test]
     fn gain_map_alignment_rules() {

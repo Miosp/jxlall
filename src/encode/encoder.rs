@@ -35,7 +35,7 @@ pub struct Enc {
 }
 
 impl Enc {
-    pub fn new() -> Result<Self, EncodeError> {
+    pub fn new(threads: usize) -> Result<Self, EncodeError> {
         unsafe {
             let runner = JxlResizableParallelRunnerCreate(null());
             if runner.is_null() {
@@ -46,8 +46,7 @@ impl Enc {
                 JxlResizableParallelRunnerDestroy(runner);
                 return err("JxlEncoderCreate failed");
             }
-            // One internal thread; file-level parallelism drives the cores.
-            JxlResizableParallelRunnerSetThreads(runner, 1);
+            JxlResizableParallelRunnerSetThreads(runner, threads);
             let s = JxlEncoderSetParallelRunner(enc, JxlResizableParallelRunner, runner);
             if s != JxlEncoderStatus::Success {
                 JxlEncoderDestroy(enc);

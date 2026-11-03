@@ -10,7 +10,7 @@ repository = "https://github.com/Miosp/jxlall"
 [dependencies]
 compio = { version = "0.19", features = ["runtime", "fs", "polling"] }
 jpegxl-sys = { version = "0.13", features = ["vendored"] }
-heic = { version = "0.1.6", features = ["std", "av1"] }
+heic = { version = "0.1.6", features = ["std", "av1", "parallel"] }
 zenwebp = "0.4"
 zune-jpeg = "0.5"
 ignore = "0.4"

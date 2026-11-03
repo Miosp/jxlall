@@ -66,7 +66,7 @@ fn claim_key(path: &Path) -> PathBuf {
 /// `restorer`: remove JPEG artifacts from the pages it selects.
 /// `rater`: score each image and store the rating in its XMP.
 pub fn run(
-    opts: RunOptions,
+    mut opts: RunOptions,
     files: Vec<InputFile>,
     stats: Arc<Stats>,
     restorer: Option<Arc<Restorer>>,
@@ -74,8 +74,9 @@ pub fn run(
 ) -> Result<(), String> {
     let jobs = opts.jobs;
     let keep_going = opts.keep_going;
-    let opts = Arc::new(opts);
     let total = files.len();
+    opts.settings.threads = threads_per_file(crate::cli::available_cores(), jobs, total);
+    let opts = Arc::new(opts);
     // Reserve output paths up front (inputs are sorted ⇒ deterministic
     // naming) so same-stem inputs from different formats cannot overwrite
     // each other — lethal under --delete-originals.
@@ -140,6 +141,11 @@ pub fn run(
         }
     });
     Ok(())
+}
+
+/// libjxl threads per file, sharing the cores between concurrent conversions.
+fn threads_per_file(cores: usize, jobs: usize, files: usize) -> usize {
+    (cores / jobs.min(files)).max(1)
 }
 
 /// One file's conversion job: source, reserved output base path, and the
@@ -811,6 +817,23 @@ mod tests {
     fn claim_for(src: &Path, out_dir: Option<&Path>, set: &mut HashSet<PathBuf>) -> PathBuf {
         let name = OutputName::new(src, out_dir, None);
         claim(set, |n| name.candidate(n))
+    }
+
+    #[test]
+    fn a_lone_file_gets_every_core() {
+        assert_eq!(threads_per_file(16, 16, 1), 16);
+    }
+
+    #[test]
+    fn cores_are_split_between_concurrent_files() {
+        assert_eq!(threads_per_file(16, 16, 3), 5);
+        assert_eq!(threads_per_file(16, 2, 100), 8);
+    }
+
+    #[test]
+    fn a_full_queue_leaves_one_thread_per_file() {
+        assert_eq!(threads_per_file(16, 16, 100), 1);
+        assert_eq!(threads_per_file(4, 128, 500), 1);
     }
 
     #[test]

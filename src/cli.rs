@@ -21,9 +21,10 @@ struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Encoder effort 1..=10 (faster → smaller files).
-    #[arg(short, long, default_value_t = 7)]
-    effort: i64,
+    /// Encoder effort 1..=10 (higher is slower and usually smaller)
+    /// [default: 4 with -d 0, otherwise 7].
+    #[arg(short, long)]
+    effort: Option<i64>,
 
     /// Lossy target distance for the pixel path (0 = lossless).
     #[arg(short, long, default_value_t = 0.0)]
@@ -33,7 +34,8 @@ struct Args {
     #[arg(long)]
     force_lossy_jpeg: bool,
 
-    /// Parallel conversions [default: CPU count, at most 128].
+    /// Files converted at once, sharing all CPU cores between them
+    /// [default: CPU count, at most 128].
     #[arg(short, long)]
     jobs: Option<usize>,
 
@@ -119,12 +121,29 @@ struct Args {
 
 const DEFAULT_NOISE_STRENGTH: f32 = 1.0;
 
+/// Default effort with `-d 0`. Effort 7 costs 1.5 to 5 times as much for
+/// lossless pixels and is often no smaller.
+const DEFAULT_LOSSLESS_EFFORT: i64 = 4;
+/// Default effort with `-d` above 0, where lower efforts drop perceptual
+/// heuristics. JPEG recompression barely changes between efforts 3 and 7, so
+/// it simply follows the run's effort.
+const DEFAULT_LOSSY_EFFORT: i64 = 7;
+
+fn resolve_effort(explicit: Option<i64>, distance: f32) -> Result<Effort, String> {
+    let default = if distance == 0.0 {
+        DEFAULT_LOSSLESS_EFFORT
+    } else {
+        DEFAULT_LOSSY_EFFORT
+    };
+    Effort::try_from(explicit.unwrap_or(default))
+}
+
 /// Upper bound for `--jobs`: each conversion holds one blocking-pool thread
 /// and may need another for file I/O on drivers without native async files;
 /// compio's pool caps at 256 threads and spins once exhausted.
 const MAX_JOBS: usize = 128;
 
-fn default_jobs() -> usize {
+pub fn available_cores() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -155,7 +174,7 @@ pub fn parse() -> Result<RunOptions, String> {
     if args.inputs.is_empty() {
         return Err("no inputs given".into());
     }
-    let effort = Effort::try_from(args.effort)?;
+    let effort = resolve_effort(args.effort, args.distance)?;
     let distance = Distance::try_from(args.distance)?;
     let noise_strength = NoiseStrength::try_from(args.noise_strength)?;
     if !args.add_noise && args.noise_strength != DEFAULT_NOISE_STRENGTH {
@@ -196,9 +215,11 @@ pub fn parse() -> Result<RunOptions, String> {
             effort,
             distance,
             noise: args.add_noise.then_some(noise_strength),
+            // The pipeline splits the cores once it knows the file count.
+            threads: 1,
         },
         force_lossy_jpeg: args.force_lossy_jpeg,
-        jobs: args.jobs.unwrap_or_else(default_jobs).clamp(1, MAX_JOBS),
+        jobs: args.jobs.unwrap_or_else(available_cores).clamp(1, MAX_JOBS),
         keep_going: args.keep_going,
         dry_run: args.dry_run,
         recursive: args.recursive,
@@ -252,6 +273,25 @@ mod tests {
             Args::try_parse_from(["jxlall", "--iqa-stars", "0.2,0.4,0.6,0.8", "a.png"]).unwrap();
         assert_eq!(parsed.iqa_stars.unwrap(), [0.2, 0.4, 0.6, 0.8]);
         assert_eq!(parsed.inputs, [std::path::PathBuf::from("a.png")]);
+    }
+
+    #[test]
+    fn default_effort_depends_on_distance_and_an_explicit_one_wins() {
+        let effort = |extra: &[&str]| {
+            let parsed = args(extra);
+            resolve_effort(parsed.effort, parsed.distance)
+                .unwrap()
+                .value()
+        };
+        assert_eq!(effort(&[]), 4);
+        assert_eq!(effort(&["-d", "1"]), 7);
+        assert_eq!(effort(&["-e", "9"]), 9);
+        assert_eq!(effort(&["-e", "2", "-d", "1"]), 2);
+    }
+
+    #[test]
+    fn out_of_range_effort_is_rejected() {
+        assert!(resolve_effort(Some(11), 0.0).is_err());
     }
 
     #[test]

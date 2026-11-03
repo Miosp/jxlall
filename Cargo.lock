@@ -832,6 +832,7 @@ dependencies = [
  "magetypes",
  "memchr",
  "rav1d-safe",
+ "rayon",
  "safe_unaligned_simd",
  "ultrahdr-core 0.4.1",
  "whereat",
