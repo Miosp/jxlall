@@ -48,6 +48,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The build runs in a pinned Alpine image, not the host toolchain the
+      # cache key is derived from, so the script hash keys the image.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ hashFiles('.github/build-alpine.sh') }}
       - run: .github/build-alpine.sh x86_64-unknown-linux-musl
       - run: .github/smoke/run.sh target/x86_64-unknown-linux-musl/release/jxlall
 
