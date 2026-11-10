@@ -8,7 +8,7 @@ use crate::ai::backend::BackendChoice;
 use crate::ai::dejpeg::DejpegOptions;
 use crate::ai::iqa::{AestheticModel, IqaOptions, TechnicalModel};
 use crate::domain::StarThresholds;
-use crate::encode::{Distance, Effort, EncodeSettings, NoiseStrength};
+use crate::encode::{Distance, Effort, EncodeSettings, NoiseIso, NoiseSettings, NoiseStrength};
 
 #[derive(Parser, Debug)]
 #[command(name = "jxlall", version, about = "Convert photos to JPEG XL")]
@@ -74,6 +74,12 @@ struct Args {
     /// amplitude grows roughly with its square root).
     #[arg(long, default_value_t = DEFAULT_NOISE_STRENGTH)]
     noise_strength: f32,
+
+    /// Grain for every file from this full-frame-equivalent ISO instead of
+    /// the source metadata, e.g. for photos with stripped EXIF. Implies
+    /// --add-noise.
+    #[arg(long, value_name = "ISO")]
+    noise_iso: Option<f32>,
 
     /// Rate each image and store a technical (detail) and an aesthetic
     /// (composition) score, each 0..1, in XMP. Models (about 90 MB each)
@@ -177,12 +183,16 @@ pub fn parse() -> Result<RunOptions, String> {
     let effort = resolve_effort(args.effort, args.distance)?;
     let distance = Distance::try_from(args.distance)?;
     let noise_strength = NoiseStrength::try_from(args.noise_strength)?;
-    if !args.add_noise && args.noise_strength != DEFAULT_NOISE_STRENGTH {
+    let noise_iso = args.noise_iso.map(NoiseIso::try_from).transpose()?;
+    let add_noise = args.add_noise || noise_iso.is_some();
+    if !add_noise && args.noise_strength != DEFAULT_NOISE_STRENGTH {
         eprintln!("warning: --noise-strength has no effect without --add-noise");
     }
-    if args.add_noise && distance.is_lossless() {
-        eprintln!("note: --add-noise needs lossy encoding (-d > 0); no grain will be added");
-    } else if args.add_noise && !args.force_lossy_jpeg && !args.dejpeg {
+    if add_noise && distance.is_lossless() {
+        eprintln!(
+            "note: grain (--add-noise, --noise-iso) needs lossy encoding (-d > 0); none will be added"
+        );
+    } else if add_noise && !args.force_lossy_jpeg && !args.dejpeg {
         eprintln!(
             "note: JPEGs recompressed losslessly get no grain; add --force-lossy-jpeg for them"
         );
@@ -214,7 +224,10 @@ pub fn parse() -> Result<RunOptions, String> {
         settings: EncodeSettings {
             effort,
             distance,
-            noise: args.add_noise.then_some(noise_strength),
+            noise: add_noise.then_some(NoiseSettings {
+                strength: noise_strength,
+                iso_override: noise_iso,
+            }),
             // The pipeline splits the cores once it knows the file count.
             threads: 1,
         },

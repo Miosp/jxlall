@@ -82,13 +82,41 @@ impl TryFrom<f32> for NoiseStrength {
     }
 }
 
+/// Full-frame-equivalent ISO given on the command line.
+#[derive(Debug, Clone, Copy)]
+pub struct NoiseIso(f32);
+
+impl NoiseIso {
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl TryFrom<f32> for NoiseIso {
+    type Error = String;
+
+    fn try_from(v: f32) -> Result<Self, Self::Error> {
+        (v > 0.0 && v.is_finite())
+            .then_some(Self(v))
+            .ok_or_else(|| "noise ISO must be a positive number".into())
+    }
+}
+
+/// Grain synthesis (`--add-noise`, `--noise-iso`).
+#[derive(Debug, Clone, Copy)]
+pub struct NoiseSettings {
+    pub strength: NoiseStrength,
+    /// Used for every file instead of the ISO in its metadata.
+    pub iso_override: Option<NoiseIso>,
+}
+
 /// Encoder knobs threaded through every encode call.
 #[derive(Debug, Clone, Copy)]
 pub struct EncodeSettings {
     pub effort: Effort,
     pub distance: Distance,
-    /// `Some` when grain synthesis is enabled (`--add-noise`).
-    pub noise: Option<NoiseStrength>,
+    /// `Some` when grain synthesis is enabled.
+    pub noise: Option<NoiseSettings>,
     /// libjxl worker threads for this file.
     pub threads: usize,
 }
