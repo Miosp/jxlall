@@ -17,7 +17,7 @@ use crate::ai::dejpeg::Restorer;
 use crate::ai::iqa::Rater;
 use crate::cli::RunOptions;
 use crate::domain::{Decoded, DecodedImage, Rating};
-use crate::encode::{EncodeError, EncodeSettings, NoiseStrength};
+use crate::encode::{EncodeError, EncodeSettings, NoiseSettings};
 use crate::inputs::InputFile;
 use crate::progress::{Progress, Stage};
 use crate::sniff::Format;
@@ -682,8 +682,8 @@ fn encode_pixels(
     let iso = settings
         .noise
         .filter(|_| !settings.distance.is_lossless())
-        .and_then(|strength| {
-            photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), strength, ctx.path)
+        .and_then(|noise| {
+            photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), noise, ctx.path)
         });
     let jxl = crate::encode::encode_image(&frame, &color, &meta, orientation, &hdr, settings, iso)
         .map_err(|e| e.to_string())?;
@@ -706,9 +706,18 @@ fn log_rating(ctx: &FileContext, rating: &Rating, took: Duration) {
     });
 }
 
-/// libjxl photon-noise ISO for one file: full-frame-equivalent EXIF ISO
-/// scaled by the user's strength. `None` (with a note) without an ISO.
-fn photon_noise_iso(exif: Option<&[u8]>, strength: NoiseStrength, path: &Path) -> Option<f32> {
+/// libjxl photon-noise ISO for one file: the `--noise-iso` override or the
+/// full-frame-equivalent EXIF ISO, scaled by the user's strength.
+fn photon_noise_iso(exif: Option<&[u8]>, noise: NoiseSettings, path: &Path) -> Option<f32> {
+    let iso = match noise.iso_override {
+        Some(iso) => f64::from(iso.get()),
+        None => metadata_iso(exif, path)?,
+    };
+    Some((iso * f64::from(noise.strength.get())) as f32)
+}
+
+/// Full-frame-equivalent EXIF ISO; `None` (with a note) without an ISO.
+fn metadata_iso(exif: Option<&[u8]>, path: &Path) -> Option<f64> {
     let Some(estimate) = exif.and_then(crate::domain::iso_from_exif) else {
         notice!(
             "note: {}: no ISO in metadata, no grain added",
@@ -723,7 +732,7 @@ fn photon_noise_iso(exif: Option<&[u8]>, strength: NoiseStrength, path: &Path) -
             estimate.iso
         );
     }
-    Some((estimate.full_frame_iso() * f64::from(strength.get())) as f32)
+    Some(estimate.full_frame_iso())
 }
 
 fn gain_map_err(e: EncodeError) -> String {
@@ -1032,6 +1041,7 @@ fn tmp_name(dst: &Path, seq: u64) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encode::{NoiseIso, NoiseStrength};
 
     /// Fresh scratch directory per test.
     fn scratch(name: &str) -> PathBuf {
@@ -1053,6 +1063,18 @@ mod tests {
     fn claim_for(src: &Path, out_dir: Option<&Path>, set: &mut HashSet<PathBuf>) -> PathBuf {
         let name = OutputName::new(src, out_dir, None);
         claim(set, |n| name.candidate(n))
+    }
+
+    #[test]
+    fn noise_iso_override_needs_no_metadata_and_is_scaled_by_strength() {
+        let noise = NoiseSettings {
+            strength: NoiseStrength::try_from(2.0).unwrap(),
+            iso_override: Some(NoiseIso::try_from(800.0).unwrap()),
+        };
+        assert_eq!(
+            photon_noise_iso(None, noise, Path::new("a.png")),
+            Some(1600.0)
+        );
     }
 
     #[test]

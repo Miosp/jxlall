@@ -109,6 +109,8 @@ jxlall [OPTIONS] [INPUTS]...
       --add-noise          add film grain from the source ISO (lossy only;
                            JPEGs also need --force-lossy-jpeg)
       --noise-strength <F> grain multiplier (default 1.0)
+      --noise-iso <ISO>    like --add-noise, but one ISO for every file
+                           instead of the metadata one
       --dejpeg             remove JPEG artifacts from JPEG inputs
       --dejpeg-all         with --dejpeg: process every input
       --iqa                rate each photo (see Quality rating)
@@ -132,7 +134,10 @@ makes the exit status non-zero.
 `--add-noise` is for photos that were denoised before conversion. It stores
 grain parameters matching the original ISO (scaled for sensor size when
 EXIF has the 35 mm focal length), and the decoder synthesizes the grain at
-a cost of a few bytes.
+a cost of a few bytes. `--noise-iso` uses one ISO for every file instead,
+for photos whose EXIF was stripped; `--noise-strength` still scales it. It
+is a full-frame equivalent: multiply the camera ISO by the crop factor
+squared (ISO 800 on a 1.5x crop sensor is about 1800).
 
 ## Quality rating
 
