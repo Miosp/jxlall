@@ -15,6 +15,9 @@ const MAX_PAGE_BYTES: usize = (MAX_PAGE_PIXELS * 8) as usize;
 const ASSOCIATED_ALPHA: u16 = 1;
 const UNASSOCIATED_ALPHA: u16 = 2;
 const COMPRESSION_JPEG: u16 = 7;
+/// NewSubfileType bit 0 and SubfileType value 2: reduced-resolution page.
+const NEW_SUBFILE_REDUCED: u32 = 1;
+const OLD_SUBFILE_REDUCED: u16 = 2;
 const TAG_XMP: u16 = 700;
 const TAG_YCBCR_COEFFICIENTS: u16 = 529;
 const TAG_REFERENCE_BLACK_WHITE: u16 = 532;
@@ -52,97 +55,126 @@ pub fn decode(data: &std::sync::Arc<Vec<u8>>) -> Result<Vec<Decoded>, String> {
         .with_limits(limits);
     let mut total_bytes = 0u64;
     let mut pages = Vec::new();
+    let mut ifds = 1;
 
     loop {
-        let (w, h) = dec.dimensions().map_err(|e| format!("TIFF dims: {e}"))?;
-        let ct = dec
-            .colortype()
-            .map_err(|e| format!("TIFF colortype: {e}"))?;
-        let pixels = u64::from(w) * u64::from(h);
-        if pixels > MAX_PAGE_PIXELS {
-            return Err(format!("TIFF page too large ({w}x{h})"));
+        // Thumbnails and previews duplicate a full page. The first page is
+        // kept regardless, so a file always yields an image.
+        if pages.is_empty() || !is_reduced_resolution(&mut dec) {
+            pages.push(decode_page(&mut dec, data, &mut total_bytes)?);
         }
-        let icc = find_bytes(&mut dec, Tag::IccProfile, "ICC profile");
-        let orientation = dec
-            .find_tag(Tag::Orientation)
-            .ok()
-            .flatten()
-            .and_then(|v| v.into_u32().ok())
-            .and_then(|v| u8::try_from(v).ok())
-            .map(Orientation::new)
-            .unwrap_or_default();
-
-        let extra = dec
-            .find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        // The crate reports gray+alpha as two-sample Multiband.
-        let ct = match (ct, extra.first()) {
-            (
-                tiff::ColorType::Multiband {
-                    bit_depth,
-                    num_samples: 2,
-                },
-                Some(&(ASSOCIATED_ALPHA | UNASSOCIATED_ALPHA)),
-            ) => tiff::ColorType::GrayA(bit_depth),
-            (ct, _) => ct,
-        };
-        let ycbcr = match ct {
-            tiff::ColorType::YCbCr(_) => ycbcr_params(&mut dec),
-            _ => YCbCr::JFIF,
-        };
-
-        // Over the limit, the crate would silently read only the first plane.
-        let complete_len = dec
-            .image_buffer_layout()
-            .map_err(|e| format!("TIFF decode: {e}"))?
-            .complete_len;
-        if complete_len > MAX_PAGE_BYTES {
-            return Err("TIFF page too large".into());
-        }
-        if total_bytes + complete_len as u64 > MAX_TOTAL_BYTES {
-            return Err("TIFF total decoded size too large".into());
-        }
-        let mut img = tiff::decoder::DecodingResult::U8(Vec::new());
-        let buffer = dec
-            .read_image_to_buffer(&mut img)
-            .map_err(|e| format!("TIFF decode: {e}"))?;
-        let layout = Layout {
-            planes: buffer.planes,
-            associated_alpha: extra.first() == Some(&ASSOCIATED_ALPHA),
-            ycbcr,
-        };
-        let frame = frame_from(w, h, ct, img, &layout)?;
-        // Gray expansion and sub-8-bit unpacking grow the frame past `complete_len`.
-        total_bytes += frame.pixels.as_raw_parts().1 as u64;
-        if total_bytes > MAX_TOTAL_BYTES {
-            return Err("TIFF total decoded size too large".into());
-        }
-
-        let exif = dec.ifd_pointer().and_then(|ifd| {
-            super::tiff_exif::minimal_exif(data, ifd.0).unwrap_or_else(|e| {
-                notice!("note: malformed TIFF metadata dropped ({e})");
-                None
-            })
-        });
-        let meta = MetaBoxes::new(exif, find_bytes(&mut dec, Tag::Unknown(TAG_XMP), "XMP"));
-        pages.push(Decoded::Image(Box::new(
-            DecodedImage::new(frame, ColorDesc::new(None, icc), meta).orientation(orientation),
-        )));
-
         if !dec.more_images() {
             break;
         }
-        // Count check before reading the next page: a >64-page bomb must
-        // not pay for page 65's decode.
-        if pages.len() >= 64 {
+        // Count check before reading the next IFD: a >64-page bomb must
+        // not pay for page 65's decode, nor loop through skipped pages.
+        if ifds >= 64 {
             return Err("TIFF with more than 64 pages not supported".into());
         }
+        ifds += 1;
         dec.next_image()
             .map_err(|e| format!("TIFF next page: {e}"))?;
     }
     Ok(pages)
+}
+
+/// NewSubfileType bit 0, or the older SubfileType value 2: a downsampled
+/// copy of another page.
+fn is_reduced_resolution<R: std::io::Read + std::io::Seek>(
+    dec: &mut tiff::decoder::Decoder<R>,
+) -> bool {
+    let new = dec
+        .find_tag_unsigned::<u32>(Tag::NewSubfileType)
+        .ok()
+        .flatten();
+    let old = dec
+        .find_tag_unsigned::<u16>(Tag::SubfileType)
+        .ok()
+        .flatten();
+    new.is_some_and(|v| v & NEW_SUBFILE_REDUCED != 0) || old == Some(OLD_SUBFILE_REDUCED)
+}
+
+fn decode_page(
+    dec: &mut tiff::decoder::Decoder<std::io::Cursor<&[u8]>>,
+    data: &std::sync::Arc<Vec<u8>>,
+    total_bytes: &mut u64,
+) -> Result<Decoded, String> {
+    let (w, h) = dec.dimensions().map_err(|e| format!("TIFF dims: {e}"))?;
+    let ct = dec
+        .colortype()
+        .map_err(|e| format!("TIFF colortype: {e}"))?;
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels > MAX_PAGE_PIXELS {
+        return Err(format!("TIFF page too large ({w}x{h})"));
+    }
+    let icc = find_bytes(dec, Tag::IccProfile, "ICC profile");
+    let orientation = dec
+        .find_tag(Tag::Orientation)
+        .ok()
+        .flatten()
+        .and_then(|v| v.into_u32().ok())
+        .and_then(|v| u8::try_from(v).ok())
+        .map(Orientation::new)
+        .unwrap_or_default();
+
+    let extra = dec
+        .find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    // The crate reports gray+alpha as two-sample Multiband.
+    let ct = match (ct, extra.first()) {
+        (
+            tiff::ColorType::Multiband {
+                bit_depth,
+                num_samples: 2,
+            },
+            Some(&(ASSOCIATED_ALPHA | UNASSOCIATED_ALPHA)),
+        ) => tiff::ColorType::GrayA(bit_depth),
+        (ct, _) => ct,
+    };
+    let ycbcr = match ct {
+        tiff::ColorType::YCbCr(_) => ycbcr_params(dec),
+        _ => YCbCr::JFIF,
+    };
+
+    // Over the limit, the crate would silently read only the first plane.
+    let complete_len = dec
+        .image_buffer_layout()
+        .map_err(|e| format!("TIFF decode: {e}"))?
+        .complete_len;
+    if complete_len > MAX_PAGE_BYTES {
+        return Err("TIFF page too large".into());
+    }
+    if *total_bytes + complete_len as u64 > MAX_TOTAL_BYTES {
+        return Err("TIFF total decoded size too large".into());
+    }
+    let mut img = tiff::decoder::DecodingResult::U8(Vec::new());
+    let buffer = dec
+        .read_image_to_buffer(&mut img)
+        .map_err(|e| format!("TIFF decode: {e}"))?;
+    let layout = Layout {
+        planes: buffer.planes,
+        associated_alpha: extra.first() == Some(&ASSOCIATED_ALPHA),
+        ycbcr,
+    };
+    let frame = frame_from(w, h, ct, img, &layout)?;
+    // Gray expansion and sub-8-bit unpacking grow the frame past `complete_len`.
+    *total_bytes += frame.pixels.as_raw_parts().1 as u64;
+    if *total_bytes > MAX_TOTAL_BYTES {
+        return Err("TIFF total decoded size too large".into());
+    }
+
+    let exif = dec.ifd_pointer().and_then(|ifd| {
+        super::tiff_exif::minimal_exif(data, ifd.0).unwrap_or_else(|e| {
+            notice!("note: malformed TIFF metadata dropped ({e})");
+            None
+        })
+    });
+    let meta = MetaBoxes::new(exif, find_bytes(dec, Tag::Unknown(TAG_XMP), "XMP"));
+    Ok(Decoded::Image(Box::new(
+        DecodedImage::new(frame, ColorDesc::new(None, icc), meta).orientation(orientation),
+    )))
 }
 
 fn frame_from(
@@ -694,6 +726,33 @@ mod tests {
             }
             assert!(exif.fields().all(|f| f.ifd_num == exif::In::PRIMARY));
         }
+    }
+
+    #[test]
+    fn reduced_resolution_pages_are_skipped() {
+        let page = |w: u32, extra: Option<(u16, V)>| {
+            let mut tags = image_tags(w, 1, vec![8], BLACK_IS_ZERO, CHUNKY);
+            tags.extend(extra);
+            (tags, vec![vec![0; w as usize]])
+        };
+        let src = build_tiff(vec![
+            page(4, None),
+            page(2, Some((254, V::Long(vec![NEW_SUBFILE_REDUCED])))),
+            page(3, None),
+            page(1, Some((255, V::Short(vec![OLD_SUBFILE_REDUCED])))),
+        ]);
+        let widths: Vec<u32> = decode_pages(src).iter().map(|p| p.frame.width).collect();
+        assert_eq!(widths, [4, 3]);
+    }
+
+    #[test]
+    fn reduced_resolution_first_page_is_kept() {
+        let mut tags = image_tags(1, 1, vec![8], BLACK_IS_ZERO, CHUNKY);
+        tags.push((254, V::Long(vec![NEW_SUBFILE_REDUCED])));
+        assert_eq!(
+            decode_pages(build_tiff(vec![(tags, vec![vec![0]])])).len(),
+            1
+        );
     }
 
     #[test]

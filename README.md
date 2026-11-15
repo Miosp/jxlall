@@ -22,7 +22,7 @@ compiled in): `cargo install --locked --git https://github.com/Miosp/jxlall`.
 | JPEG | Lossless recompression; the original JPEG can be restored byte for byte (`--iqa` can change its XMP, see [Quality rating](#quality-rating)). CMYK JPEGs are converted to RGB and lossless (SOF3) JPEGs are decoded to pixels instead. |
 | HEIC/HEIF, AVIF | Decoded at native bit depth. |
 | WebP, PNG | Stills only. |
-| TIFF / BigTIFF | Each page becomes `name_p1.jxl`, `name_p2.jxl`, ... |
+| TIFF / BigTIFF | Each page becomes `name_p1.jxl`, `name_p2.jxl`, ...; thumbnails and other reduced-resolution pages are skipped. |
 
 Pixel inputs are encoded losslessly unless you pass `-d`.
 
