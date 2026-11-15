@@ -9,7 +9,7 @@ use crate::ai::dejpeg::DejpegOptions;
 use crate::ai::iqa::{AestheticModel, IqaOptions, TechnicalModel};
 use crate::domain::StarThresholds;
 use crate::encode::{
-    Distance, Effort, EncodeSettings, MaxBitDepth, NoiseIso, NoiseSettings, NoiseStrength,
+    Distance, Effort, EncodeSettings, Epf, MaxBitDepth, NoiseIso, NoiseSettings, NoiseStrength,
 };
 
 #[derive(Parser, Debug)]
@@ -42,6 +42,12 @@ struct Args {
     /// Force the pixel path for JPEG (disable lossless jbrd recompression).
     #[arg(long)]
     force_lossy_jpeg: bool,
+
+    /// Edge-preserving filter strength 0..=3 for lossy pixel encodes. 3 hides
+    /// block edges best, at the cost of some softness [default: picked by
+    /// libjxl from the distance].
+    #[arg(long, value_name = "0..=3")]
+    epf: Option<i64>,
 
     /// Files converted at once, sharing all CPU cores between them
     /// [default: CPU count, at most 128].
@@ -192,6 +198,14 @@ pub fn parse() -> Result<RunOptions, String> {
     let effort = resolve_effort(args.effort, args.distance)?;
     let distance = Distance::try_from(args.distance)?;
     let max_bit_depth = args.max_bit_depth.map(MaxBitDepth::try_from).transpose()?;
+    let epf = args.epf.map(Epf::try_from).transpose()?;
+    if epf.is_some() && distance.is_lossless() {
+        eprintln!("warning: --epf has no effect with lossless encoding (-d 0)");
+    } else if epf.is_some() && !args.force_lossy_jpeg && !args.dejpeg {
+        eprintln!(
+            "note: JPEGs recompressed losslessly are not filtered; add --force-lossy-jpeg for them"
+        );
+    }
     let noise_strength = NoiseStrength::try_from(args.noise_strength)?;
     let noise_iso = args.noise_iso.map(NoiseIso::try_from).transpose()?;
     let add_noise = args.add_noise || noise_iso.is_some();
@@ -235,6 +249,7 @@ pub fn parse() -> Result<RunOptions, String> {
             effort,
             distance,
             max_bit_depth,
+            epf,
             noise: add_noise.then_some(NoiseSettings {
                 strength: noise_strength,
                 iso_override: noise_iso,
@@ -315,6 +330,14 @@ mod tests {
     #[test]
     fn out_of_range_effort_is_rejected() {
         assert!(resolve_effort(Some(11), 0.0).is_err());
+    }
+
+    #[test]
+    fn epf_is_unset_by_default_and_out_of_range_is_rejected() {
+        assert_eq!(args(&[]).epf, None);
+        assert_eq!(args(&["--epf", "3"]).epf, Some(3));
+        assert!(Epf::try_from(4).is_err());
+        assert!(Epf::try_from(-1).is_err());
     }
 
     #[test]
