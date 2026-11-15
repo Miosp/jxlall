@@ -106,6 +106,8 @@ jxlall [OPTIONS] [INPUTS]...
       --max-bit-depth <N>  store deeper images at N bits (8..=16), e.g. for
                            viewers that mishandle 16-bit JXL; with -d 0 the
                            samples are rounded, so no longer bit-exact
+      --epf <0..=3>        edge-preserving filter for lossy encodes; 3 hides
+                           blocking best (default: chosen from -d)
   -j, --jobs <N>           files converted at once, sharing all CPU cores
                            (default: CPU count)
       --delete-originals   delete sources after successful conversion

@@ -202,7 +202,10 @@ fn describe_quality(settings: &EncodeSettings) -> String {
     let quality = if settings.distance.is_lossless() {
         "lossless".into()
     } else {
-        format!("distance {}", settings.distance.get())
+        match settings.epf {
+            Some(epf) => format!("distance {}, EPF {}", settings.distance.get(), epf.value()),
+            None => format!("distance {}", settings.distance.get()),
+        }
     };
     match settings.max_bit_depth {
         Some(cap) => format!("{quality}, at most {}-bit", cap.get()),

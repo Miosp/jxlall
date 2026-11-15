@@ -102,6 +102,28 @@ impl TryFrom<f32> for NoiseIso {
     }
 }
 
+/// Edge-preserving filter strength 0..=3, applied by the decoder to lossy
+/// frames. Higher hides block edges at the cost of some softness.
+#[derive(Debug, Clone, Copy)]
+pub struct Epf(i64);
+
+impl TryFrom<i64> for Epf {
+    type Error = String;
+
+    fn try_from(v: i64) -> Result<Self, Self::Error> {
+        (0..=3)
+            .contains(&v)
+            .then_some(Self(v))
+            .ok_or_else(|| "EPF must be 0..=3".into())
+    }
+}
+
+impl Epf {
+    pub(crate) fn value(self) -> i64 {
+        self.0
+    }
+}
+
 /// Grain synthesis (`--add-noise`, `--noise-iso`).
 #[derive(Debug, Clone, Copy)]
 pub struct NoiseSettings {
@@ -140,6 +162,8 @@ pub struct EncodeSettings {
     /// Deeper integer frames are stored at this depth; libjxl rounds the
     /// samples, so lossless output is exact only up to it.
     pub max_bit_depth: Option<MaxBitDepth>,
+    /// `None` lets libjxl pick the strength from the distance.
+    pub epf: Option<Epf>,
     /// `Some` when grain synthesis is enabled.
     pub noise: Option<NoiseSettings>,
     /// libjxl worker threads for this file.
@@ -283,6 +307,16 @@ pub fn encode_image(
             // color space) get it colored, jbrd frames (YCbCr) only above
             // mid-gray. So lossy pixel frames only.
             set_photon_noise(fs, photon_noise_iso)?;
+            if let Some(epf) = settings.epf {
+                check(
+                    JxlEncoderFrameSettingsSetOption(
+                        fs,
+                        JxlEncoderFrameSettingId::Epf,
+                        epf.value(),
+                    ),
+                    "set EPF",
+                )?;
+            }
             check(
                 JxlEncoderSetFrameDistance(fs, settings.distance.get()),
                 "SetFrameDistance",
@@ -538,6 +572,7 @@ mod tests {
             effort: Effort::try_from(1).unwrap(),
             distance: Distance::try_from(0.0).unwrap(),
             max_bit_depth: None,
+            epf: None,
             noise: None,
             threads: 1,
         }
