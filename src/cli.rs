@@ -8,7 +8,9 @@ use crate::ai::backend::BackendChoice;
 use crate::ai::dejpeg::DejpegOptions;
 use crate::ai::iqa::{AestheticModel, IqaOptions, TechnicalModel};
 use crate::domain::StarThresholds;
-use crate::encode::{Distance, Effort, EncodeSettings, NoiseIso, NoiseSettings, NoiseStrength};
+use crate::encode::{
+    Distance, Effort, EncodeSettings, MaxBitDepth, NoiseIso, NoiseSettings, NoiseStrength,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "jxlall", version, about = "Convert photos to JPEG XL")]
@@ -29,6 +31,13 @@ struct Args {
     /// Lossy target distance for the pixel path (0 = lossless).
     #[arg(short, long, default_value_t = 0.0)]
     distance: f32,
+
+    /// Store integer pixel images deeper than this at this many bits (8..=16),
+    /// e.g. for viewers that mishandle 16-bit JXL. With -d 0 the samples are
+    /// rounded, so the output is no longer bit-exact. Float images and
+    /// recompressed JPEGs are unaffected.
+    #[arg(long, value_name = "BITS")]
+    max_bit_depth: Option<u8>,
 
     /// Force the pixel path for JPEG (disable lossless jbrd recompression).
     #[arg(long)]
@@ -182,6 +191,7 @@ pub fn parse() -> Result<RunOptions, String> {
     }
     let effort = resolve_effort(args.effort, args.distance)?;
     let distance = Distance::try_from(args.distance)?;
+    let max_bit_depth = args.max_bit_depth.map(MaxBitDepth::try_from).transpose()?;
     let noise_strength = NoiseStrength::try_from(args.noise_strength)?;
     let noise_iso = args.noise_iso.map(NoiseIso::try_from).transpose()?;
     let add_noise = args.add_noise || noise_iso.is_some();
@@ -224,6 +234,7 @@ pub fn parse() -> Result<RunOptions, String> {
         settings: EncodeSettings {
             effort,
             distance,
+            max_bit_depth,
             noise: add_noise.then_some(NoiseSettings {
                 strength: noise_strength,
                 iso_override: noise_iso,

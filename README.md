@@ -103,6 +103,9 @@ jxlall [OPTIONS] [INPUTS]...
   -e, --effort <1..=10>    encoder effort (default 4 with -d 0, otherwise 7)
   -d, --distance <F32>     lossy distance for pixel inputs (default 0 = lossless)
       --force-lossy-jpeg   re-encode JPEG pixels instead of recompressing
+      --max-bit-depth <N>  store deeper images at N bits (8..=16), e.g. for
+                           viewers that mishandle 16-bit JXL; with -d 0 the
+                           samples are rounded, so no longer bit-exact
   -j, --jobs <N>           files converted at once, sharing all CPU cores
                            (default: CPU count)
       --delete-originals   delete sources after successful conversion
