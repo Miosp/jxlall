@@ -1,0 +1,12 @@
+[env]
+# The vendored libjxl is otherwise built unoptimized on Windows (about 20x
+# slower encodes). The `cmake` crate, with the Visual Studio generator, sets
+# CMAKE_<LANG>_FLAGS_RELEASE itself and drops every `-O`/`/O` flag from them,
+# so no optimization level reaches the compiler. jpegxl-src compiles with
+# clang-cl, and its `-clang:` passthrough is not filtered.
+# After changing these, run `cargo clean -p jpegxl-sys`: the build script
+# does not rerun on its own.
+CFLAGS_x86_64_pc_windows_msvc = "-clang:-O2 -DNDEBUG"
+CXXFLAGS_x86_64_pc_windows_msvc = "-clang:-O2 -DNDEBUG"
+CFLAGS_aarch64_pc_windows_msvc = "-clang:-O2 -DNDEBUG"
+CXXFLAGS_aarch64_pc_windows_msvc = "-clang:-O2 -DNDEBUG"
