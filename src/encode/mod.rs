@@ -110,11 +110,36 @@ pub struct NoiseSettings {
     pub iso_override: Option<NoiseIso>,
 }
 
+/// Upper bound on the stored bit depth of integer pixel frames
+/// (`--max-bit-depth`).
+#[derive(Debug, Clone, Copy)]
+pub struct MaxBitDepth(u8);
+
+impl MaxBitDepth {
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for MaxBitDepth {
+    type Error = String;
+
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
+        (8..=16)
+            .contains(&v)
+            .then_some(Self(v))
+            .ok_or_else(|| "max bit depth must be 8..=16".into())
+    }
+}
+
 /// Encoder knobs threaded through every encode call.
 #[derive(Debug, Clone, Copy)]
 pub struct EncodeSettings {
     pub effort: Effort,
     pub distance: Distance,
+    /// Deeper integer frames are stored at this depth; libjxl rounds the
+    /// samples, so lossless output is exact only up to it.
+    pub max_bit_depth: Option<MaxBitDepth>,
     /// `Some` when grain synthesis is enabled.
     pub noise: Option<NoiseSettings>,
     /// libjxl worker threads for this file.
@@ -213,7 +238,7 @@ pub fn encode_image(
         let (choice, gray_pixels) = resolve_color(frame, color);
         bi.num_color_channels = if choice.gray { 1 } else { 3 };
         bi.orientation = orientation.jxl();
-        let bit_depth = stored_bit_depth(frame);
+        let bit_depth = stored_bit_depth(frame, settings.max_bit_depth);
         if frame.has_alpha {
             bi.num_extra_channels = 1;
             bi.alpha_bits = u32::from(bit_depth);
@@ -283,11 +308,15 @@ const U8_TO_U16_SCALE: u16 = 257;
 
 /// Bits to declare for this frame. 8-bit content in 16-bit storage is declared
 /// as 8 bits: it decodes to the same values and spares libjxl a sparse range.
-fn stored_bit_depth(frame: &ImageFrame) -> u8 {
-    match &frame.pixels {
+/// Integer samples are full-range for their buffer type, so a lower declared
+/// depth makes libjxl round them to it; float frames ignore the cap.
+fn stored_bit_depth(frame: &ImageFrame, cap: Option<MaxBitDepth>) -> u8 {
+    let depth = match &frame.pixels {
+        Pixels::F32(_) => return frame.bit_depth,
         Pixels::U16(v) if frame.bit_depth == 16 && v.iter().all(|s| s % U8_TO_U16_SCALE == 0) => 8,
         _ => frame.bit_depth,
-    }
+    };
+    cap.map_or(depth, |cap| depth.min(cap.get()))
 }
 
 fn apply_bit_depth(bi: &mut JxlBasicInfo, frame: &ImageFrame, bit_depth: u8) {
@@ -508,6 +537,7 @@ mod tests {
         EncodeSettings {
             effort: Effort::try_from(1).unwrap(),
             distance: Distance::try_from(0.0).unwrap(),
+            max_bit_depth: None,
             noise: None,
             threads: 1,
         }
@@ -641,6 +671,62 @@ mod tests {
         let (bits, decoded) = decode_u16(&encode_rgb16_frame(pixels.clone()));
         assert_eq!(bits, 16);
         assert_eq!(decoded, pixels);
+    }
+
+    fn encode_rgb16_capped(pixels: &[u16], bit_depth: u8, cap: u8) -> Vec<u8> {
+        let img = ImageFrame {
+            width: (pixels.len() / 3) as u32,
+            height: 1,
+            bit_depth,
+            has_alpha: false,
+            alpha_premultiplied: false,
+            pixels: Pixels::U16(pixels.to_vec()),
+        };
+        encode_image(
+            &img,
+            &ColorDesc::default(),
+            &MetaBoxes::default(),
+            Orientation::new(1),
+            &crate::domain::Hdr::default(),
+            &EncodeSettings {
+                max_bit_depth: Some(MaxBitDepth::try_from(cap).unwrap()),
+                ..settings()
+            },
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn max_bit_depth_rounds_deeper_samples() {
+        let pixels: Vec<u16> = (0..=1000u32)
+            .flat_map(|i| [i * 65, 65535 - i * 65, i * 31])
+            .map(|v| v as u16)
+            .collect();
+        let (bits, decoded) = decode_u16(&encode_rgb16_capped(&pixels, 16, 8));
+        assert_eq!(bits, 8);
+        for (got, src) in decoded.iter().zip(&pixels) {
+            let want = (f64::from(*src) * 255.0 / 65535.0).round() as u16 * U8_TO_U16_SCALE;
+            assert_eq!(*got, want, "source {src}");
+        }
+    }
+
+    #[test]
+    fn max_bit_depth_above_the_source_depth_changes_nothing() {
+        let pixels: Vec<u16> = (0..=1023u32)
+            .flat_map(|v| [v, 1023 - v, v / 2])
+            .map(|v| ((v * 65535 + 512) / 1023) as u16)
+            .collect();
+        let (bits, decoded) = decode_u16(&encode_rgb16_capped(&pixels, 10, 12));
+        assert_eq!(bits, 10);
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn max_bit_depth_range() {
+        assert!(MaxBitDepth::try_from(7).is_err());
+        assert!(MaxBitDepth::try_from(17).is_err());
+        assert_eq!(MaxBitDepth::try_from(10).unwrap().get(), 10);
     }
 
     #[test]

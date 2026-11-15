@@ -199,10 +199,14 @@ fn describe_settings(settings: &EncodeSettings, concurrent: usize) -> String {
 }
 
 fn describe_quality(settings: &EncodeSettings) -> String {
-    if settings.distance.is_lossless() {
+    let quality = if settings.distance.is_lossless() {
         "lossless".into()
     } else {
         format!("distance {}", settings.distance.get())
+    };
+    match settings.max_bit_depth {
+        Some(cap) => format!("{quality}, at most {}-bit", cap.get()),
+        None => quality,
     }
 }
 
