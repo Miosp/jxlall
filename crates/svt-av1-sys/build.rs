@@ -26,6 +26,23 @@ fn main() {
         .define("SVT_AV1_LTO", "OFF")
         .define("EXCLUDE_HASH", "ON")
         .define("CMAKE_INSTALL_LIBDIR", "lib");
+    if target_env == "msvc" {
+        // SVT-AV1's CMake (policy CMP0091) picks the C runtime from this
+        // variable and ignores the /MT flag the cmake crate adds, so a
+        // `+crt-static` build would mix runtimes and fail to link.
+        let crt_static = env::var("CARGO_CFG_TARGET_FEATURE")
+            .unwrap_or_default()
+            .split(',')
+            .any(|f| f == "crt-static");
+        cfg.define(
+            "CMAKE_MSVC_RUNTIME_LIBRARY",
+            if crt_static {
+                "MultiThreaded"
+            } else {
+                "MultiThreadedDLL"
+            },
+        );
+    }
     if arch == "aarch64" && target_env == "msvc" {
         // SVT-AV1's Arm SIMD uses GCC-style -march flags and GNU assembly,
         // which cl.exe cannot build.
