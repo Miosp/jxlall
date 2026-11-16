@@ -1,8 +1,9 @@
 # jxlall
 
-Converts a photo library to JPEG XL, keeping pixels, color profiles,
-EXIF/XMP and HDR gain maps wherever the format allows. Single binary,
-uses every core whether you convert one photo or a whole library.
+Converts a photo library to JPEG XL, or with `-f avif` to AVIF, keeping
+pixels, color profiles, EXIF/XMP and HDR gain maps wherever the format
+allows. Single binary, uses every core whether you convert one photo or a
+whole library.
 
 ## Install
 
@@ -12,8 +13,11 @@ builds are fully static; the `gnu` builds need glibc 2.35 and libstdc++
 from GCC 11 or newer. Each release lists SHA-256 checksums, and each
 archive has a GitHub build attestation (`gh attestation verify <archive> --repo Miosp/jxlall`).
 
-To build from source you need Rust 1.93+, CMake and a C++ compiler (libjxl is
-compiled in): `cargo install --locked --git https://github.com/Miosp/jxlall`.
+To build from source you need Rust 1.93+, CMake, a C++ compiler (libjxl and
+SVT-AV1 are compiled in) and, on x86-64, [NASM](https://nasm.us) 2.14+:
+`cargo install --locked --git https://github.com/Miosp/jxlall`. A clone needs
+`git submodule update --init` for the SVT-AV1 sources. Without NASM, SVT-AV1 is
+built without SIMD and AVIF encoding is several times slower.
 
 ## Inputs
 
@@ -43,6 +47,48 @@ monochrome ones, the usual kind, are kept).
   are the exception, since their decoder already rotates.
 
 Anything dropped is reported, and the image still converts.
+
+## AVIF output
+
+`-f avif` writes AVIF with [SVT-AV1](https://github.com/Uranite/svt-av1-tritium)
+(the Tritium fork, tuned for still images) instead of JPEG XL. AVIF is always
+lossy: `--crf` sets the quality (0 to 70, lower is better, default 23) and
+`--preset` the speed (-2 to 13, lower is slower, default 5); `--svt KEY=VALUE`
+passes any other SvtAv1EncApp option. At the defaults a 16-thread CPU converts
+a library at about 10 s per 24 MP photo; a single photo takes about 25 s, as
+SVT-AV1 spreads one still image over cores poorly. JPEGs are decoded to
+pixels (there is no lossless JPEG recompression), and `-e`, `-d`, `--epf`, `--max-bit-depth` and
+`--force-lossy-jpeg` have no effect.
+
+Viewers disagree on how AVIF color is described, so jxlall writes one of three
+spaces, chosen by the source's gamut, in a form tested to display correctly in
+Windows Photos, Chrome and Immich (Firefox and libvips-based tools read the
+same signals):
+
+| Source | Output |
+|---|---|
+| sRGB or untagged | sRGB: CICP 1/13/6 and an sRGB ICC profile |
+| Display P3 | Display P3: CICP 12/13/6 and a "Display P3" ICC profile |
+| Wider (Adobe RGB, ProPhoto, Rec.2020) | the smallest gamut holding both P3 and Adobe RGB, described by the ICC profile (CICP primaries unspecified) |
+
+Rec.2020 primaries are avoided because Windows Photos shows them washed out,
+and AVIF has no CICP code for Adobe RGB. Colors beyond the wide space
+(ProPhoto, Rec.2020 extremes) are clipped. PQ and HLG sources keep their CICP
+and pixels.
+
+Other differences from JXL output:
+
+- Always 10-bit 4:2:0 at full range: Windows cannot decode 4:4:4 AVIF.
+- EXIF orientation is applied to the pixels and reset to 1, since viewers
+  disagree on AVIF rotation.
+- Gain maps are stored as an ISO 21496-1 `tmap` item with the base image as
+  the fallback.
+- Images larger than 16384x8704 (the encoder limit, e.g. 61 MP portraits)
+  are stored as a grid of tiles.
+- `--add-noise` stores AV1 film grain from the same ISO model; the decoder
+  synthesizes it.
+- An EXIF `ColorSpace` of sRGB is set to Uncalibrated on wide-gamut output, or
+  Immich would show an sRGB preview.
 
 ## Artifact removal
 
@@ -89,7 +135,7 @@ on CPU and seconds on a discrete GPU.
 
 ## Safety
 
-`a.jpg` becomes `a.jxl`. Existing files are never overwritten: a name clash
+`a.jpg` becomes `a.jxl` (or `a.avif`). Existing files are never overwritten: a name clash
 gets a suffix instead (`a.png.jxl`, `a.png.2.jxl`). With `--delete-originals` a source is deleted
 only after its output has been synced to disk.
 
@@ -98,6 +144,7 @@ only after its output has been synced to disk.
 ```
 jxlall [OPTIONS] [INPUTS]...
   -o, --output <DIR>       output directory, mirrors the input tree (default: next to sources)
+  -f, --format <F>         jxl or avif (default jxl)
   -r, --recursive          descend into subdirectories
   -p, --pattern <PAT>      extensions to scan, `|`-separated (default: all supported)
   -e, --effort <1..=10>    encoder effort (default 4 with -d 0, otherwise 7)
@@ -108,6 +155,9 @@ jxlall [OPTIONS] [INPUTS]...
                            samples are rounded, so no longer bit-exact
       --epf <0..=3>        edge-preserving filter for lossy encodes; 3 hides
                            blocking best (default: chosen from -d)
+      --crf <0..=70>       AVIF quality, lower is better (default 23)
+      --preset <-2..=13>   AVIF speed, lower is slower (default 5)
+      --svt <KEY=VALUE>    extra SVT-AV1 option for AVIF, repeatable
   -j, --jobs <N>           files converted at once, sharing all CPU cores
                            (default: CPU count)
       --delete-originals   delete sources after successful conversion
@@ -185,7 +235,8 @@ downloads and GPU support. The Charm code and checkpoints are Apache-2.0.
 The source code is MIT. A built binary is not: it statically links `heic`,
 `zenwebp` and `rav1d-safe` (AGPL-3.0, or commercial from Imazen) and
 `jpegxl-sys` (GPL-3.0, bundling BSD-licensed libjxl), so distributing a
-binary means following AGPL-3.0 terms.
+binary means following AGPL-3.0 terms. It also includes SVT-AV1
+(BSD-3-Clause-Clear, with the Alliance for Open Media Patent License 1.0).
 
 `--dejpeg` and `--iqa` download ONNX Runtime (MIT), their models (Apache-2.0) and,
 when that backend is used, NVIDIA TensorRT RTX under its own license, from their

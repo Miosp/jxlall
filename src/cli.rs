@@ -2,18 +2,19 @@
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 use crate::ai::backend::BackendChoice;
 use crate::ai::dejpeg::DejpegOptions;
 use crate::ai::iqa::{AestheticModel, IqaOptions, TechnicalModel};
+use crate::avif::{AvifSettings, Crf, DEFAULT_CRF, DEFAULT_PRESET, Preset};
 use crate::domain::StarThresholds;
 use crate::encode::{
     Distance, Effort, EncodeSettings, Epf, MaxBitDepth, NoiseIso, NoiseSettings, NoiseStrength,
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "jxlall", version, about = "Convert photos to JPEG XL")]
+#[command(name = "jxlall", version, about = "Convert photos to JPEG XL or AVIF")]
 struct Args {
     /// Input files and/or directories (directories are scanned; add
     /// --recursive to descend into subdirectories).
@@ -22,6 +23,26 @@ struct Args {
     /// [default: alongside sources].
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Output format. AVIF is always lossy (see --crf) and stores wide-gamut
+    /// sources in a color space Windows, Chrome and Immich all display.
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Jxl)]
+    format: OutputFormat,
+
+    /// AVIF quality: SVT-AV1 CRF 0..=70, lower is better, in quarter steps
+    /// [default: 23].
+    #[arg(long, value_name = "CRF")]
+    crf: Option<f32>,
+
+    /// AVIF encoder preset -2..=13, lower is slower and better [default: 5].
+    #[arg(long, allow_negative_numbers = true)]
+    preset: Option<i32>,
+
+    /// Extra SVT-AV1 option for AVIF as KEY=VALUE, named like the
+    /// SvtAv1EncApp long option without dashes (e.g. `sharpness=2`).
+    /// Repeatable; applied after jxlall's own settings.
+    #[arg(long, value_name = "KEY=VALUE", allow_hyphen_values = true)]
+    svt: Vec<String>,
 
     /// Encoder effort 1..=10 (higher is slower and usually smaller)
     /// [default: 4 with -d 0, otherwise 7].
@@ -81,7 +102,7 @@ struct Args {
     /// Add decode-time film grain (JXL photon noise) matching the ISO in
     /// the source metadata, for images that were denoised before
     /// conversion. Lossy encodes only (-d > 0; JPEGs also need
-    /// --force-lossy-jpeg).
+    /// --force-lossy-jpeg). With --format avif: AV1 film grain, always.
     #[arg(long)]
     add_noise: bool,
 
@@ -142,6 +163,49 @@ struct Args {
 
 const DEFAULT_NOISE_STRENGTH: f32 = 1.0;
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputFormat {
+    Jxl,
+    Avif,
+}
+
+/// AVIF settings, or a warning for each AVIF option given with JXL output
+/// and each JXL option given with AVIF output.
+fn resolve_avif(args: &Args) -> Result<Option<AvifSettings>, String> {
+    let avif_given = args.crf.is_some() || args.preset.is_some() || !args.svt.is_empty();
+    if args.format == OutputFormat::Jxl {
+        if avif_given {
+            eprintln!("warning: --crf, --preset and --svt have no effect without --format avif");
+        }
+        return Ok(None);
+    }
+    let jxl_only = [
+        (args.effort.is_some(), "--effort"),
+        (args.distance != 0.0, "--distance"),
+        (args.max_bit_depth.is_some(), "--max-bit-depth"),
+        (args.epf.is_some(), "--epf"),
+        (args.force_lossy_jpeg, "--force-lossy-jpeg"),
+    ];
+    for (_, flag) in jxl_only.iter().filter(|(given, _)| *given) {
+        eprintln!("warning: {flag} has no effect with --format avif");
+    }
+    let svt = args
+        .svt
+        .iter()
+        .map(|kv| {
+            kv.split_once('=')
+                .filter(|(k, _)| !k.is_empty())
+                .map(|(k, v)| (k.trim_start_matches('-').to_owned(), v.to_owned()))
+                .ok_or_else(|| format!("--svt expects KEY=VALUE, got `{kv}`"))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(Some(AvifSettings {
+        crf: Crf::try_from(args.crf.unwrap_or(DEFAULT_CRF))?,
+        preset: Preset::try_from(args.preset.unwrap_or(DEFAULT_PRESET))?,
+        svt,
+    }))
+}
+
 /// Default effort with `-d 0`. Effort 7 costs 1.5 to 5 times as much for
 /// lossless pixels and is often no smaller.
 const DEFAULT_LOSSLESS_EFFORT: i64 = 4;
@@ -195,11 +259,14 @@ pub fn parse() -> Result<RunOptions, String> {
     if args.inputs.is_empty() {
         return Err("no inputs given".into());
     }
+    let avif = resolve_avif(&args)?;
     let effort = resolve_effort(args.effort, args.distance)?;
     let distance = Distance::try_from(args.distance)?;
     let max_bit_depth = args.max_bit_depth.map(MaxBitDepth::try_from).transpose()?;
     let epf = args.epf.map(Epf::try_from).transpose()?;
-    if epf.is_some() && distance.is_lossless() {
+    if avif.is_some() {
+        // JXL-only options were reported by resolve_avif.
+    } else if epf.is_some() && distance.is_lossless() {
         eprintln!("warning: --epf has no effect with lossless encoding (-d 0)");
     } else if epf.is_some() && !args.force_lossy_jpeg && !args.dejpeg {
         eprintln!(
@@ -212,7 +279,9 @@ pub fn parse() -> Result<RunOptions, String> {
     if !add_noise && args.noise_strength != DEFAULT_NOISE_STRENGTH {
         eprintln!("warning: --noise-strength has no effect without --add-noise");
     }
-    if add_noise && distance.is_lossless() {
+    if avif.is_some() {
+        // AVIF is always lossy and decodes every input to pixels.
+    } else if add_noise && distance.is_lossless() {
         eprintln!(
             "note: grain (--add-noise, --noise-iso) needs lossy encoding (-d > 0); none will be added"
         );
@@ -256,6 +325,7 @@ pub fn parse() -> Result<RunOptions, String> {
             }),
             // The pipeline splits the cores once it knows the file count.
             threads: 1,
+            avif,
         },
         force_lossy_jpeg: args.force_lossy_jpeg,
         jobs: args.jobs.unwrap_or_else(available_cores).clamp(1, MAX_JOBS),
@@ -343,5 +413,43 @@ mod tests {
     #[test]
     fn dejpeg_leaves_distance_alone() {
         assert_eq!(args(&["--dejpeg"]).distance, 0.0);
+    }
+
+    #[test]
+    fn jxl_is_default_and_avif_gets_defaults() {
+        assert!(resolve_avif(&args(&[])).unwrap().is_none());
+        let avif = resolve_avif(&args(&["-f", "avif"])).unwrap().unwrap();
+        assert_eq!(avif.crf.get(), DEFAULT_CRF);
+        assert_eq!(avif.preset.get(), DEFAULT_PRESET);
+        assert!(avif.svt.is_empty());
+    }
+
+    #[test]
+    fn avif_options_parse_and_validate() {
+        let avif = resolve_avif(&args(&[
+            "--format",
+            "avif",
+            "--crf",
+            "27.25",
+            "--preset",
+            "-1",
+            "--svt",
+            "sharpness=2",
+            "--svt",
+            "--tune=4",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(avif.crf.get(), 27.25);
+        assert_eq!(avif.preset.get(), -1);
+        assert_eq!(
+            avif.svt,
+            [
+                ("sharpness".to_owned(), "2".to_owned()),
+                ("tune".to_owned(), "4".to_owned())
+            ]
+        );
+        assert!(resolve_avif(&args(&["-f", "avif", "--crf", "71"])).is_err());
+        assert!(resolve_avif(&args(&["-f", "avif", "--svt", "novalue"])).is_err());
     }
 }

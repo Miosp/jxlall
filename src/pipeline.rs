@@ -115,7 +115,12 @@ pub fn run(
         .zip(sizes)
         .enumerate()
         .map(|(id, (f, size))| {
-            let name = OutputName::new(&f.path, opts.output.as_deref(), f.root.as_deref());
+            let out_ext = if opts.settings.avif.is_some() {
+                "avif"
+            } else {
+                "jxl"
+            };
+            let name = OutputName::new(&f.path, opts.output.as_deref(), f.root.as_deref(), out_ext);
             let dst = claim(&mut claimed.borrow_mut(), |n| name.candidate(n));
             Task {
                 name,
@@ -186,6 +191,9 @@ fn describe_settings(settings: &EncodeSettings, concurrent: usize) -> String {
     } else {
         format!("{concurrent} files at once, {threads} each")
     };
+    if settings.avif.is_some() {
+        return format!("AVIF, {}; {parallelism}", describe_quality(settings));
+    }
     let quality = if settings.distance.is_lossless() {
         describe_quality(settings)
     } else {
@@ -199,6 +207,9 @@ fn describe_settings(settings: &EncodeSettings, concurrent: usize) -> String {
 }
 
 fn describe_quality(settings: &EncodeSettings) -> String {
+    if let Some(avif) = &settings.avif {
+        return format!("CRF {}, preset {}", avif.crf.get(), avif.preset.get());
+    }
     let quality = if settings.distance.is_lossless() {
         "lossless".into()
     } else {
@@ -440,7 +451,7 @@ async fn convert_file(
     let outputs = {
         let data = Arc::clone(&data);
         let path = path.to_path_buf();
-        let settings = *settings;
+        let settings = settings.clone();
         let tracker = Arc::clone(&tracker);
         compio::runtime::spawn_blocking(move || {
             let ctx = FileContext {
@@ -506,12 +517,15 @@ impl FileContext<'_> {
         }
     }
 
-    fn log_encoded(&self, jxl: &[u8], how: &str, started: Instant) {
+    fn log_encoded(&self, out: &[u8], how: &str, started: Instant) {
         self.log(|| {
+            let effort = match self.settings.avif {
+                Some(_) => String::new(),
+                None => format!(", effort {}", self.settings.effort.value()),
+            };
             format!(
-                "encoded to {} ({how}, effort {}) in {}",
-                Bytes(jxl.len() as u64),
-                self.settings.effort.value(),
+                "encoded to {} ({how}{effort}) in {}",
+                Bytes(out.len() as u64),
                 Elapsed(started.elapsed())
             )
         });
@@ -548,7 +562,10 @@ fn encode_all(
             _ => d,
         };
         let jxl = match d {
-            Decoded::Jpeg(jpeg) if force_lossy_jpeg => encode_pixel_from_jpeg(&jpeg, ctx)?,
+            // AVIF has no JPEG recompression: always decode to pixels.
+            Decoded::Jpeg(jpeg) if force_lossy_jpeg || ctx.settings.avif.is_some() => {
+                encode_pixel_from_jpeg(&jpeg, ctx)?
+            }
             Decoded::Jpeg(jpeg) => encode_jpeg(&jpeg, ctx)?,
             Decoded::Image(img) => encode_decoded_image(*img, ctx)?,
         };
@@ -672,7 +689,7 @@ fn encode_pixels(
         hdr,
         gain_map,
     } = img;
-    if let Some(gm) = gain_map.as_ref() {
+    if let Some(gm) = gain_map.as_ref().filter(|_| settings.avif.is_none()) {
         meta.jhgm = Some(gm.to_jhgm(settings).map_err(gain_map_err)?);
     }
     if let Some(rating) = rating {
@@ -686,12 +703,33 @@ fn encode_pixels(
         }
     }
     // Only lossy pixel frames get grain (see encode_image); cli notes once.
+    // AVIF is always lossy.
     let iso = settings
         .noise
-        .filter(|_| !settings.distance.is_lossless())
+        .filter(|_| settings.avif.is_some() || !settings.distance.is_lossless())
         .and_then(|noise| {
             photon_noise_iso(meta.exif.as_deref().map(Vec::as_slice), noise, ctx.path)
         });
+    if let Some(avif) = &settings.avif {
+        let input = crate::avif::Input {
+            frame,
+            color,
+            meta,
+            orientation,
+            gain_map,
+        };
+        let out = crate::avif::encode(input, avif, settings.threads, iso)?;
+        let tiles = match out.tiles {
+            1 => String::new(),
+            n => format!(", {n} tiles"),
+        };
+        ctx.log_encoded(
+            &out.bytes,
+            &format!("{}, {}{tiles}", describe_quality(settings), out.space),
+            started,
+        );
+        return Ok(out.bytes);
+    }
     let jxl = crate::encode::encode_image(&frame, &color, &meta, orientation, &hdr, settings, iso)
         .map_err(|e| e.to_string())?;
     ctx.log_encoded(&jxl, &describe_quality(settings), started);
@@ -759,7 +797,8 @@ fn decode_jpeg_pixels(jpeg: &[u8]) -> Result<DecodedImage, String> {
 }
 
 /// Output naming scheme for one source file: `{stem}.jxl`, then
-/// `{stem}.{ext}.jxl`, then `{stem}.{ext}.N.jxl` (N ≥ 2). `-o` with a
+/// `{stem}.{ext}.jxl`, then `{stem}.{ext}.N.jxl` (N ≥ 2), with `avif` in
+/// place of `jxl` for AVIF output. `-o` with a
 /// scanned directory mirrors the input layout; explicit files land flat in
 /// `-o`.
 struct OutputName {
@@ -769,10 +808,12 @@ struct OutputName {
     sync_top: PathBuf,
     stem: String,
     ext: String,
+    /// Output extension, `jxl` or `avif`.
+    out_ext: &'static str,
 }
 
 impl OutputName {
-    fn new(src: &Path, out_dir: Option<&Path>, root: Option<&Path>) -> Self {
+    fn new(src: &Path, out_dir: Option<&Path>, root: Option<&Path>, out_ext: &'static str) -> Self {
         let dir = match (out_dir, root) {
             // Mirror the input layout relative to the scanned root: the
             // directory is the parent of the mirrored relative path.
@@ -801,15 +842,22 @@ impl OutputName {
             sync_top,
             stem,
             ext,
+            out_ext,
         }
     }
 
     fn candidate(&self, n: u32) -> PathBuf {
-        let Self { dir, stem, ext, .. } = self;
+        let Self {
+            dir,
+            stem,
+            ext,
+            out_ext,
+            ..
+        } = self;
         dir.join(match n {
-            0 => format!("{stem}.jxl"),
-            1 => format!("{stem}.{ext}.jxl"),
-            n => format!("{stem}.{ext}.{n}.jxl"),
+            0 => format!("{stem}.{out_ext}"),
+            1 => format!("{stem}.{ext}.{out_ext}"),
+            n => format!("{stem}.{ext}.{n}.{out_ext}"),
         })
     }
 
@@ -828,16 +876,21 @@ impl OutputName {
 }
 
 /// Page `page` (0-based) of a multi-page document derives from the claimed
-/// base name: `{stem}_pN.jxl`, then `{stem}_pN.M.jxl` (M ≥ 2).
+/// base name: `{stem}_pN.jxl`, then `{stem}_pN.M.jxl` (M ≥ 2), keeping
+/// the base's extension.
 fn page_candidate(base: &Path, page: usize, n: u32) -> PathBuf {
     let stem = base
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "image".into());
+    let ext = base
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "jxl".into());
     let name = format!("{stem}_p{}", page + 1);
     base.with_file_name(match n {
-        0 => format!("{name}.jxl"),
-        n => format!("{name}.{}.jxl", n + 1),
+        0 => format!("{name}.{ext}"),
+        n => format!("{name}.{}.{ext}", n + 1),
     })
 }
 
@@ -1042,7 +1095,11 @@ fn tmp_name(dst: &Path, seq: u64) -> PathBuf {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64),
     );
-    dst.with_extension(format!("jxl.tmp.{:016x}", h.finish()))
+    let ext = dst
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dst.with_extension(format!("{ext}.tmp.{:016x}", h.finish()))
 }
 
 #[cfg(test)]
@@ -1068,7 +1125,7 @@ mod tests {
     }
 
     fn claim_for(src: &Path, out_dir: Option<&Path>, set: &mut HashSet<PathBuf>) -> PathBuf {
-        let name = OutputName::new(src, out_dir, None);
+        let name = OutputName::new(src, out_dir, None, "jxl");
         claim(set, |n| name.candidate(n))
     }
 
@@ -1195,7 +1252,7 @@ mod tests {
         std::fs::write(dir.join("a.jxl"), b"unrelated").unwrap();
         std::fs::write(dir.join("a.png.jxl"), b"previous run").unwrap();
         let src = dir.join("a.png");
-        let name = OutputName::new(&src, None, None);
+        let name = OutputName::new(&src, None, None, "jxl");
         let mut set = claimed_with_inputs(&[&src]);
         let dst = claim(&mut set, |n| name.candidate(n));
         let claimed: Claimed = Rc::new(RefCell::new(set));

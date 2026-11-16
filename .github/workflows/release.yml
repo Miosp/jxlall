@@ -65,12 +65,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # SVT-AV1 (AVIF encoder) sources.
+          submodules: true
 
       - if: ${{ !matrix.alpine }}
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+
+      # SVT-AV1's x86-64 assembly.
+      - name: Install NASM
+        if: ${{ runner.arch == 'X64' && !matrix.alpine }}
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -qq && sudo apt-get install -y -qq nasm ;;
+            macOS) brew install nasm ;;
+            Windows) choco install nasm -y --no-progress ;;
+          esac
 
       - name: Build
         if: ${{ !matrix.alpine }}

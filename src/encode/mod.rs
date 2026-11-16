@@ -155,7 +155,7 @@ impl TryFrom<u8> for MaxBitDepth {
 }
 
 /// Encoder knobs threaded through every encode call.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct EncodeSettings {
     pub effort: Effort,
     pub distance: Distance,
@@ -168,6 +168,8 @@ pub struct EncodeSettings {
     pub noise: Option<NoiseSettings>,
     /// libjxl worker threads for this file.
     pub threads: usize,
+    /// `Some`: write AVIF instead of JXL (the JXL fields are then unused).
+    pub avif: Option<crate::avif::AvifSettings>,
 }
 
 /// Decode-time grain synthesis at the given ISO (full-frame equivalent).
@@ -575,6 +577,7 @@ mod tests {
             epf: None,
             noise: None,
             threads: 1,
+            avif: None,
         }
     }
 

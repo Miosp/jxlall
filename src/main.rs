@@ -1,9 +1,10 @@
-//! CLI entry: discover inputs, convert to JXL, print summary.
+//! CLI entry: discover inputs, convert to JXL or AVIF, print summary.
 
 #[macro_use]
 mod progress;
 
 mod ai;
+mod avif;
 mod cli;
 mod decode;
 mod domain;

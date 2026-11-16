@@ -17,7 +17,7 @@ trap 'sudo chown -R "$(id -u):$(id -g)" target "$registry"' EXIT
 docker run --rm -v "$PWD:/src" -v "$registry:/usr/local/cargo/registry" \
     -w /src -e TARGET="$target" \
     -e RUSTFLAGS="-C target-feature=+crt-static" "$IMAGE" sh -euc '
-        apk add --no-cache build-base cmake linux-headers
+        apk add --no-cache build-base cmake linux-headers nasm
         cargo build --release --locked --no-default-features --target "$TARGET"
         cargo test --release --locked --no-default-features --target "$TARGET"'
 
