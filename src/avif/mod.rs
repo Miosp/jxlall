@@ -126,7 +126,7 @@ pub fn encode(
     } = input;
     let linear_default = matches!(frame.pixels, Pixels::F32(_));
     let mut img = to_rgb16(frame);
-    if img.alpha && img.data.chunks_exact(4).all(|p| p[3] == u16::MAX) {
+    if img.alpha && img.data.as_chunks::<4>().0.iter().all(|p| p[3] == u16::MAX) {
         img = drop_alpha(img);
     }
     let o = orientation.get();
@@ -340,7 +340,7 @@ fn to_rgb16(frame: ImageFrame) -> Rgb16 {
         }
     };
     if has_alpha && alpha_premultiplied {
-        for p in data.chunks_exact_mut(4) {
+        for p in data.as_chunks_mut::<4>().0 {
             let a = u32::from(p[3]);
             for c in &mut p[..3] {
                 if let Some(v) = (u32::from(*c) * 65535 + a / 2).checked_div(a) {
@@ -361,7 +361,9 @@ fn drop_alpha(img: Rgb16) -> Rgb16 {
     Rgb16 {
         data: img
             .data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2]])
             .collect(),
         alpha: false,

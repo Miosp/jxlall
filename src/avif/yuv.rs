@@ -79,7 +79,9 @@ pub fn from_rgb(img: &Rgb16, matrix: u8) -> Planes {
 pub fn from_alpha(img: &Rgb16) -> Planes {
     let y = img
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| ((u32::from(p[3]) * 1023 + 32767) / 65535) as u16)
         .collect();
     gray_planes(img.width, img.height, y)
