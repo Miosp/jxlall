@@ -43,11 +43,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
             .decode_to_frame(data)
             .map_err(|e| format!("HEIF decode: {e}"))?;
         let (w, h) = (frame.cropped_width(), frame.cropped_height());
-        let px = if info.has_alpha {
-            frame.to_rgba16().map_err(|e| format!("to_rgba16: {e}"))?
-        } else {
-            frame.to_rgb16().map_err(|e| format!("to_rgb16: {e}"))?
-        };
+        let px = frame_to_rgb16(&frame, info.has_alpha);
         // Declaring the true depth saves libjxl from coding a sparse 16-bit
         // range; heic's full-range samples round back to it exactly. The
         // frame's depth set their scale; the container's may disagree.
@@ -74,6 +70,81 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         .hdr(hdr)
         .gain_map(gain_map),
     )))
+}
+
+/// YCbCr -> RGB(A) for frames deeper than 8 bits, at the frame's own
+/// depth, scaled to u16 so that the depth rounds back exactly.
+///
+/// Replaces heic 0.1.6 `to_rgb16`/`to_rgba16`, whose fixed-point shifts are
+/// only right for 8-bit: at 10 bits full-range chroma comes out 4x too weak
+/// and limited-range output 4x too dark (16x at 12 bits).
+fn frame_to_rgb16(f: &heic::DecodedFrame, alpha: bool) -> Vec<u16> {
+    let depth = u32::from(f.bit_depth);
+    let max = ((1u32 << depth) - 1) as f32;
+    let neutral = (1u32 << (depth - 1)) as f32;
+    let scale = (1u32 << (depth - 8)) as f32;
+    // H.273 normalization to E'y in [0, 1] and E'pb/E'pr in [-0.5, 0.5].
+    let (y_off, y_div, c_div) = if f.full_range {
+        (0.0, max, max)
+    } else {
+        (16.0 * scale, 219.0 * scale, 224.0 * scale)
+    };
+    let (kr, kb) = match f.matrix_coeffs {
+        1 => (0.2126, 0.0722),
+        9 | 10 => (0.2627, 0.0593),
+        _ => (0.299, 0.114),
+    };
+    let identity = f.matrix_coeffs == 0;
+    let kg = 1.0 - kr - kb;
+    let (x0, x1) = (f.crop_left, f.width - f.crop_right);
+    let (y0, y1) = (f.crop_top, f.height - f.crop_bottom);
+    let (cw, cstride) = (f.width as usize, f.c_stride());
+    let ch = if alpha { 4 } else { 3 };
+    let mut out = Vec::with_capacity(((x1 - x0) * (y1 - y0)) as usize * ch);
+    let quantize = |v: f32| -> u16 {
+        let q = (v * max).round().clamp(0.0, max) as u32;
+        ((q * 65535 + (1 << (depth - 1))) / ((1 << depth) - 1)) as u16
+    };
+    for y in y0..y1 {
+        let cy = match f.chroma_format {
+            1 => y / 2,
+            _ => y,
+        } as usize;
+        for x in x0..x1 {
+            let i = y as usize * cw + x as usize;
+            let (cb, cr) = if f.chroma_format == 0 {
+                (neutral, neutral)
+            } else {
+                let cx = if f.chroma_format == 3 { x } else { x / 2 } as usize;
+                let ci = cy * cstride + cx;
+                (
+                    f32::from(f.cb_plane.get(ci).copied().unwrap_or(neutral as u16)),
+                    f32::from(f.cr_plane.get(ci).copied().unwrap_or(neutral as u16)),
+                )
+            };
+            let (r, g, b) = if identity {
+                // GBR: Y carries G, Cb carries B, Cr carries R.
+                let n = |v: f32| (v - y_off) / y_div;
+                (n(cr), n(f32::from(f.y_plane[i])), n(cb))
+            } else {
+                let ey = (f32::from(f.y_plane[i]) - y_off) / y_div;
+                let (pb, pr) = ((cb - neutral) / c_div, (cr - neutral) / c_div);
+                let r = ey + 2.0 * (1.0 - kr) * pr;
+                let b = ey + 2.0 * (1.0 - kb) * pb;
+                (r, (ey - kr * r - kb * b) / kg, b)
+            };
+            out.extend([quantize(r), quantize(g), quantize(b)]);
+            if alpha {
+                let a = f
+                    .alpha_plane
+                    .as_ref()
+                    .and_then(|a| a.get((y - y0) as usize * (x1 - x0) as usize + (x - x0) as usize))
+                    .map_or(u16::MAX, |&a| quantize(f32::from(a) / max));
+                out.push(a);
+            }
+        }
+    }
+    out
 }
 
 fn decode_gain_map(
@@ -130,6 +201,26 @@ mod tests {
         };
         assert_eq!(img.frame.bit_depth, 10);
         assert!(matches!(img.frame.pixels, Pixels::U16(_)));
+    }
+
+    /// heic 0.1.6's own 16-bit conversion desaturated (full range) or
+    /// darkened (limited range) every deeper-than-8-bit frame.
+    #[test]
+    fn ten_bit_avif_colors_are_right_in_both_ranges() {
+        for data in [
+            &include_bytes!("testdata/red10_full.avif")[..],
+            &include_bytes!("testdata/red10_limited.avif")[..],
+        ] {
+            let Decoded::Image(img) = decode(data).unwrap() else {
+                panic!("expected pixels");
+            };
+            let Pixels::U16(px) = &img.frame.pixels else {
+                panic!("expected 16-bit samples");
+            };
+            let mid = (8 * 16 + 8) * 3;
+            let [r, g, b] = [px[mid], px[mid + 1], px[mid + 2]];
+            assert!(r > 64_500 && g < 1_000 && b < 1_000, "{r} {g} {b}");
+        }
     }
 
     #[test]

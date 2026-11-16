@@ -1,0 +1,13 @@
+[package]
+name = "svt-av1-tritium-sys"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT AND BSD-3-Clause-Clear"
+description = "Static SVT-AV1 (Tritium fork) build with a one-shot still-image encode shim"
+publish = false
+links = "SvtAv1Enc"
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1"

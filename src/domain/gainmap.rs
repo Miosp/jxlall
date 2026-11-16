@@ -28,6 +28,20 @@ impl GainMapData {
         let codestream = encode_gain_map_gray(self.width, self.height, &self.gray, settings)?;
         build_jhgm_box(&self.iso_metadata, &codestream)
     }
+
+    /// AVIF `tmap` item payload: the version byte, then the same ISO
+    /// 21496-1 metadata the jhgm bundle carries.
+    pub fn tmap_payload(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(self.iso_metadata.len() + 1);
+        v.push(0);
+        v.extend_from_slice(&self.iso_metadata);
+        v
+    }
+
+    /// `(width, height, 8-bit gray samples)`.
+    pub fn gray(&self) -> (u32, u32, &[u8]) {
+        (self.width, self.height, &self.gray)
+    }
 }
 
 /// Convert a decoded heic gain map; `None` when the file carries neither

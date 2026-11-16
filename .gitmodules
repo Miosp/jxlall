@@ -1,0 +1,3 @@
+[submodule "crates/svt-av1-sys/svt-av1"]
+	path = crates/svt-av1-sys/svt-av1
+	url = https://github.com/Uranite/svt-av1-tritium.git
