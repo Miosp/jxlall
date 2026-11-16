@@ -205,6 +205,10 @@ pub fn encode(
     let grain_iso = grain_iso.filter(|_| signal.space.is_some());
     let (width, height) = (img.width, img.height);
     let planes = yuv::from_rgb(&img, signal.matrix);
+    let alpha_planes = img.alpha.then(|| yuv::from_alpha(&img));
+    // The 16-bit RGB copy is as large as the planes: free it before SVT-AV1
+    // allocates its own buffers.
+    drop(img);
     let color_image = encode_image(&planes, 3, &color_params, |tile| {
         grain_iso.map(|iso| grain::photon_noise(iso, width, height, tile))
     })?;
@@ -218,17 +222,9 @@ pub fn encode(
         .chain([("color-range", "1")])
         .chain(extra.iter().copied())
         .collect();
-    let alpha = if img.alpha {
-        Some(encode_image(
-            &yuv::from_alpha(&img),
-            1,
-            &plain_params,
-            |_| None,
-        )?)
-    } else {
-        None
-    };
-    drop(img);
+    let alpha = alpha_planes
+        .map(|p| encode_image(&p, 1, &plain_params, |_| None))
+        .transpose()?;
     let gain_map = match gain_map {
         Some(gm) => encode_gain_map(&gm, o, &plain_params)?,
         None => None,

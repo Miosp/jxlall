@@ -49,7 +49,7 @@ struct Args {
     format: OutputFormat,
 
     /// Delete source files after successful conversion.
-    #[arg(long, help_heading = OUTPUT)]
+    #[arg(short, long, help_heading = OUTPUT)]
     delete_originals: bool,
 
     /// Quality, same scale for both formats [default: 100 (lossless) for JPEG
@@ -62,11 +62,12 @@ struct Args {
     #[arg(short, long, value_name = "0..=100", help_heading = ENCODING)]
     quality: Option<f32>,
 
-    /// Higher is slower, smaller or better [default: 7; 4 for lossless JPEG
-    /// XL].
+    /// Higher is slower, smaller or better [default: 7 for lossy JPEG XL, 4
+    /// for lossless, 6 for AVIF].
     ///
-    /// AVIF maps it to SVT-AV1 presets 11..=2 (7 = preset 5); `-x preset=N`
-    /// reaches the others.
+    /// AVIF maps it to SVT-AV1 presets 11..=2 (6 = preset 6); `-x preset=N`
+    /// reaches the others. Each step below 6 roughly doubles the AVIF encode
+    /// time for about 2% smaller files.
     #[arg(short, long, value_name = "1..=10", help_heading = ENCODING)]
     effort: Option<i64>,
 
@@ -188,9 +189,12 @@ struct Args {
     )]
     pattern: String,
 
-    /// Files converted at once [default: CPU count, at most 128].
+    /// Files converted at once [default: CPU count; a quarter of it for
+    /// AVIF].
     ///
-    /// They share all CPU cores between them.
+    /// They share all CPU cores between them. An AVIF encode of a 42 MP photo
+    /// takes about 1.6 GB of memory, and more than a few at once barely
+    /// speeds a run up. At most 128.
     #[arg(short, long, help_heading = RUN)]
     jobs: Option<usize>,
 
@@ -221,10 +225,17 @@ const DEFAULT_STARS: [f32; 4] = [0.37, 0.48, 0.59, 0.64];
 /// Default effort for lossless JPEG XL. Effort 7 costs 1.5 to 5 times as much
 /// for lossless pixels and is often no smaller.
 const DEFAULT_LOSSLESS_EFFORT: i64 = 4;
-/// Default effort otherwise: lower efforts drop libjxl's perceptual
-/// heuristics; for AVIF it is SVT-AV1 preset 5. JPEG recompression barely
-/// changes between efforts 3 and 7, so it simply follows the run's effort.
+/// Default effort for lossy JPEG XL: lower efforts drop libjxl's perceptual
+/// heuristics. JPEG recompression barely changes between efforts 3 and 7, so
+/// it simply follows the run's effort.
 const DEFAULT_EFFORT: i64 = 7;
+/// Default AVIF effort, SVT-AV1 preset 6: half the time of preset 5 for
+/// files 2.4% larger at equal SSIMULACRA2.
+const DEFAULT_AVIF_EFFORT: i64 = 6;
+/// AVIF runs one file per this many cores by default: on 16 cores, 4 files
+/// at once are within 15% of the best throughput at a quarter of 16 files'
+/// memory (6.5 GB vs 25 GB for 42 MP photos).
+const AVIF_CORES_PER_JOB: usize = 4;
 
 /// Upper bound for `--jobs`: each conversion holds one blocking-pool thread
 /// and may need another for file I/O on drivers without native async files;
@@ -256,6 +267,13 @@ pub struct RunOptions {
     pub verbose: bool,
 }
 
+fn default_jobs(format: OutputFormat, cores: usize) -> usize {
+    match format {
+        OutputFormat::Jxl => cores,
+        OutputFormat::Avif => (cores / AVIF_CORES_PER_JOB).max(1),
+    }
+}
+
 /// `KEY=VALUE` with leading dashes on the key dropped.
 fn split_option(kv: &str) -> Result<(String, String), String> {
     kv.split_once('=')
@@ -265,8 +283,10 @@ fn split_option(kv: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("-x expects KEY=VALUE, got `{kv}`"))
 }
 
-fn resolve_effort(explicit: Option<i64>, lossless_jxl: bool) -> Result<Effort, String> {
-    let default = if lossless_jxl {
+fn resolve_effort(explicit: Option<i64>, avif: bool, lossless_jxl: bool) -> Result<Effort, String> {
+    let default = if avif {
+        DEFAULT_AVIF_EFFORT
+    } else if lossless_jxl {
         DEFAULT_LOSSLESS_EFFORT
     } else {
         DEFAULT_EFFORT
@@ -354,7 +374,7 @@ fn resolve_settings(args: &Args) -> Result<EncodeSettings, String> {
     }))?;
     let distance = Distance::try_from(quality.jxl_distance())?;
     let lossless_jxl = !avif && distance.is_lossless();
-    let effort = resolve_effort(args.effort, lossless_jxl)?;
+    let effort = resolve_effort(args.effort, avif, lossless_jxl)?;
     let noise = resolve_grain(args.grain.clone())?;
     let max_bit_depth = args.max_bit_depth.map(MaxBitDepth::try_from).transpose()?;
     let raw = args
@@ -428,7 +448,10 @@ pub fn parse() -> Result<RunOptions, String> {
         output: args.output,
         settings,
         reencode_jpeg: args.reencode_jpeg,
-        jobs: args.jobs.unwrap_or_else(available_cores).clamp(1, MAX_JOBS),
+        jobs: args
+            .jobs
+            .unwrap_or_else(|| default_jobs(args.format, available_cores()))
+            .clamp(1, MAX_JOBS),
         keep_going: !args.fail_fast,
         dry_run: args.dry_run,
         recursive: args.recursive,
@@ -470,7 +493,18 @@ mod tests {
     fn avif_maps_quality_and_effort() {
         let a = settings(&["-f", "avif"]).avif.unwrap();
         assert_eq!(a.crf.get(), 23.0);
-        assert_eq!(a.preset.get(), 5);
+        assert_eq!(a.preset.get(), 6);
+        assert_eq!(
+            settings(&["-f", "avif", "-e", "7"])
+                .avif
+                .unwrap()
+                .preset
+                .get(),
+            5
+        );
+        assert_eq!(default_jobs(OutputFormat::Avif, 16), 4);
+        assert_eq!(default_jobs(OutputFormat::Avif, 2), 1);
+        assert_eq!(default_jobs(OutputFormat::Jxl, 16), 16);
         let a = settings(&["-f", "avif", "-q", "90", "-e", "10"])
             .avif
             .unwrap();
@@ -572,8 +606,8 @@ mod tests {
 
     #[test]
     fn short_flags() {
-        let parsed = args(&["-n", "-r", "-v", "-j", "3"]);
-        assert!(parsed.dry_run && parsed.recursive && parsed.verbose);
+        let parsed = args(&["-n", "-r", "-v", "-d", "-j", "3"]);
+        assert!(parsed.dry_run && parsed.recursive && parsed.verbose && parsed.delete_originals);
         assert_eq!(parsed.jobs, Some(3));
         assert!(!parsed.fail_fast);
     }

@@ -52,12 +52,23 @@ Anything dropped is reported, and the image still converts.
 
 `-f avif` writes AVIF with [SVT-AV1](https://github.com/Uranite/svt-av1-tritium)
 (the Tritium fork, tuned for still images) instead of JPEG XL. AVIF is always
-lossy; `-q` defaults to 85 (SVT-AV1 CRF 23) and `-e` to 7 (preset 5), and
+lossy; `-q` defaults to 85 (SVT-AV1 CRF 23) and `-e` to 6 (preset 6), and
 `-x KEY=VALUE` passes any other SvtAv1EncApp option (`-x preset=-1`,
-`-x crf=20.5`). At the defaults a 16-thread CPU converts a library at about
-10 s per 24 MP photo; a single photo takes about 25 s, as SVT-AV1 spreads one
-still image over cores poorly. JPEGs are decoded to pixels (there is no
-lossless JPEG recompression), and `--max-bit-depth` has no effect.
+`-x crf=20.5`). JPEGs are decoded to pixels (there is no lossless JPEG
+recompression), and `--max-bit-depth` has no effect.
+
+Each AVIF encode of a 42 MP photo holds about 1.6 GB of memory, and SVT-AV1
+gains little from more than a few photos at once, so AVIF runs a quarter as
+many files at once as there are CPU cores. Measured on a 16-thread CPU with
+16 photos of 42 MP:
+
+| | per photo | peak memory |
+|---|---|---|
+| default (`-e 6`, 4 at once) | 7 s | 6 GB |
+| `-e 6 -j 8` | 6 s | 13 GB |
+| `-e 7` (preset 5, 2.4% smaller) | 14 s | 6.5 GB |
+| `-e 7 -j 16` | 16.5 s | 25 GB |
+| `-e 5` (preset 7, 3.6% larger than `-e 6`) | 4 s | 6 GB |
 
 Viewers disagree on how AVIF color is described, so jxlall writes one of three
 spaces, chosen by the source's gamut, in a form tested to display correctly in
@@ -147,10 +158,10 @@ jxlall [OPTIONS] [INPUTS]...
 Output:
   -o, --output <DIR>          output directory, mirrors the input tree (default: next to sources)
   -f, --format <jxl|avif>     output format (default jxl)
-      --delete-originals      delete sources after successful conversion
+  -d, --delete-originals      delete sources after successful conversion
 Encoding:
   -q, --quality <0..=100>     same scale for both formats (default: 100 = lossless JXL, 85 AVIF)
-  -e, --effort <1..=10>       higher is slower, smaller or better (default 7; 4 for lossless JXL)
+  -e, --effort <1..=10>       higher is slower, smaller or better (default 7; 4 lossless JXL; 6 AVIF)
   -g, --grain[=xN|ISO]        film grain from the metadata ISO, times N, or a fixed ISO
       --reencode-jpeg         re-encode JPEG pixels instead of recompressing losslessly
   -x <KEY=VALUE>              raw encoder setting, repeatable (--help only)
@@ -164,7 +175,7 @@ AI:
 Run:
   -r, --recursive             descend into subdirectories
   -p, --pattern <PAT>         extensions to scan, `|`-separated (--help only)
-  -j, --jobs <N>              files converted at once (default: CPU count)
+  -j, --jobs <N>              files converted at once (default: CPU count; a quarter for AVIF)
   -n, --dry-run               list what would be converted
       --fail-fast             stop at the first failure (--help only)
   -v, --verbose               log each file's details and timings
