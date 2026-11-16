@@ -3,9 +3,11 @@
 mod boxes;
 mod color;
 mod encoder;
+mod options;
 
 pub use boxes::{build_jhgm_box, encode_gain_map_gray};
 pub use encoder::{Enc, EncodeError};
+pub use options::{JxlOption, validate as validate_options};
 
 use self::encoder::{check, err};
 use crate::domain::{ColorDesc, IccSpace, ImageFrame, MetaBoxes, Orientation, Pixels};
@@ -102,29 +104,7 @@ impl TryFrom<f32> for NoiseIso {
     }
 }
 
-/// Edge-preserving filter strength 0..=3, applied by the decoder to lossy
-/// frames. Higher hides block edges at the cost of some softness.
-#[derive(Debug, Clone, Copy)]
-pub struct Epf(i64);
-
-impl TryFrom<i64> for Epf {
-    type Error = String;
-
-    fn try_from(v: i64) -> Result<Self, Self::Error> {
-        (0..=3)
-            .contains(&v)
-            .then_some(Self(v))
-            .ok_or_else(|| "EPF must be 0..=3".into())
-    }
-}
-
-impl Epf {
-    pub(crate) fn value(self) -> i64 {
-        self.0
-    }
-}
-
-/// Grain synthesis (`--add-noise`, `--noise-iso`).
+/// Grain synthesis (`-g`).
 #[derive(Debug, Clone, Copy)]
 pub struct NoiseSettings {
     pub strength: NoiseStrength,
@@ -158,18 +138,28 @@ impl TryFrom<u8> for MaxBitDepth {
 #[derive(Debug, Clone)]
 pub struct EncodeSettings {
     pub effort: Effort,
+    /// `-q`; `distance` and the AVIF CRF are derived from it.
+    pub quality: crate::quality::Quality,
     pub distance: Distance,
     /// Deeper integer frames are stored at this depth; libjxl rounds the
     /// samples, so lossless output is exact only up to it.
     pub max_bit_depth: Option<MaxBitDepth>,
-    /// `None` lets libjxl pick the strength from the distance.
-    pub epf: Option<Epf>,
+    /// Raw libjxl frame settings (`-x`), applied after jxlall's own.
+    pub options: Vec<JxlOption>,
     /// `Some` when grain synthesis is enabled.
     pub noise: Option<NoiseSettings>,
     /// libjxl worker threads for this file.
     pub threads: usize,
     /// `Some`: write AVIF instead of JXL (the JXL fields are then unused).
     pub avif: Option<crate::avif::AvifSettings>,
+}
+
+impl EncodeSettings {
+    /// Grain or `-x` settings that lossless JPEG recompression ignores.
+    pub fn has_pixel_only_settings(&self) -> bool {
+        (self.noise.is_some() && !self.distance.is_lossless())
+            || self.options.iter().any(|o| o.pixels_only())
+    }
 }
 
 /// Decode-time grain synthesis at the given ISO (full-frame equivalent).
@@ -229,6 +219,7 @@ pub fn encode_jpeg(
             ),
             "set jpeg_compress_boxes",
         )?;
+        options::apply(settings_handle, &settings.options, true)?;
         // EXIF/XMP/JUMBF preservation is the default since libjxl 0.10.
         let s = JxlEncoderAddJPEGFrame(settings_handle, jpeg.as_ptr(), jpeg.len());
         if s == JxlEncoderStatus::Error {
@@ -309,21 +300,13 @@ pub fn encode_image(
             // color space) get it colored, jbrd frames (YCbCr) only above
             // mid-gray. So lossy pixel frames only.
             set_photon_noise(fs, photon_noise_iso)?;
-            if let Some(epf) = settings.epf {
-                check(
-                    JxlEncoderFrameSettingsSetOption(
-                        fs,
-                        JxlEncoderFrameSettingId::Epf,
-                        epf.value(),
-                    ),
-                    "set EPF",
-                )?;
-            }
             check(
                 JxlEncoderSetFrameDistance(fs, settings.distance.get()),
                 "SetFrameDistance",
             )?;
         }
+
+        options::apply(fs, &settings.options, false)?;
 
         let pixels = gray_pixels.as_ref().unwrap_or(&frame.pixels);
         let format = pixel_format(pixels, frame.has_alpha, choice.gray);
@@ -572,9 +555,10 @@ mod tests {
     fn settings() -> EncodeSettings {
         EncodeSettings {
             effort: Effort::try_from(1).unwrap(),
+            quality: crate::quality::Quality::JXL_DEFAULT,
             distance: Distance::try_from(0.0).unwrap(),
             max_bit_depth: None,
-            epf: None,
+            options: Vec::new(),
             noise: None,
             threads: 1,
             avif: None,

@@ -20,8 +20,6 @@ use yuv::Planes;
 const MAX_WIDTH: u32 = 16384;
 const MAX_HEIGHT: u32 = 8704;
 const BIT_DEPTH: u8 = 10;
-pub const DEFAULT_CRF: f32 = 23.0;
-pub const DEFAULT_PRESET: i32 = 5;
 
 /// Quality target, SVT-AV1 CRF 0..=70 (lower is better; quarter steps).
 #[derive(Debug, Clone, Copy)]
@@ -34,7 +32,7 @@ impl TryFrom<f32> for Crf {
         (0.0..=70.0)
             .contains(&v)
             .then_some(Self(v))
-            .ok_or_else(|| "--crf must be 0..=70".into())
+            .ok_or_else(|| "CRF must be 0..=70".into())
     }
 }
 
@@ -48,18 +46,13 @@ impl Crf {
 #[derive(Debug, Clone, Copy)]
 pub struct Preset(i32);
 
-impl TryFrom<i32> for Preset {
-    type Error = String;
-
-    fn try_from(v: i32) -> Result<Self, Self::Error> {
-        (-2..=13)
-            .contains(&v)
-            .then_some(Self(v))
-            .ok_or_else(|| "--preset must be -2..=13".into())
-    }
-}
-
 impl Preset {
+    /// `-e` 1..=10 maps onto presets 11..=2: the default effort 7 is preset
+    /// 5. Other presets are reachable with `-x preset=N`.
+    pub fn from_effort(effort: crate::encode::Effort) -> Self {
+        Self(12 - effort.value() as i32)
+    }
+
     pub fn get(self) -> i32 {
         self.0
     }
@@ -81,6 +74,38 @@ const TUNING: [(&str, &str); 5] = [
     ("complex-hvs", "1"),
     ("noise-adaptive-filtering", "1"),
 ];
+
+/// SVT-AV1 checks option names and values only when encoding: encode a
+/// tiny picture once so a bad `-x` is one error, not one per file.
+pub fn validate_options(settings: &AvifSettings) -> Result<(), String> {
+    if settings.svt.is_empty() {
+        return Ok(());
+    }
+    let crf = settings.crf.get().to_string();
+    let preset = settings.preset.get().to_string();
+    let params: Vec<(&str, &str)> = [("avif", "1"), ("preset", &preset), ("crf", &crf)]
+        .into_iter()
+        .chain(TUNING)
+        .chain(settings.svt.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .collect();
+    const SIDE: u32 = 16;
+    let (cw, ch) = svt_av1_tritium_sys::Yuv420::chroma_size(SIDE, SIDE);
+    let luma = vec![512u16; (SIDE * SIDE) as usize];
+    let chroma = vec![512u16; (cw * ch) as usize];
+    svt_av1_tritium_sys::encode_yuv420_10(
+        &params,
+        None,
+        &svt_av1_tritium_sys::Yuv420 {
+            width: SIDE,
+            height: SIDE,
+            y: &luma,
+            u: &chroma,
+            v: &chroma,
+        },
+    )
+    .map(drop)
+    .map_err(|e| format!("-x: {e}"))
+}
 
 /// SVT-AV1 parallelism level (1..=6) for a thread budget, matching the
 /// encoder's own core-count mapping.

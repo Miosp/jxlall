@@ -21,7 +21,7 @@ for name in gradient plasma; do
 done
 
 # AVIF output: an ISOBMFF `ftyp` box with the `avif` major brand.
-"$bin" -f avif --preset 10 -o "$out" "$here/gradient.png" "$here/plasma.jpg"
+"$bin" -f avif -e 2 -o "$out" "$here/gradient.png" "$here/plasma.jpg"
 for name in gradient plasma; do
     file="$out/$name.avif"
     magic=$(od -An -tx1 -j4 -N8 "$file" | tr -d ' \n')

@@ -147,6 +147,9 @@ pub struct Report<'a> {
     pub elapsed: Duration,
     pub settings: String,
     pub notes: u64,
+    /// JPEGs recompressed losslessly although grain or pixel-only `-x`
+    /// settings were given.
+    pub lossless_jpegs_untouched: u64,
     /// Inputs that could not be read or scanned, reported as they were found.
     pub input_errors: u64,
 }
@@ -220,6 +223,13 @@ impl fmt::Display for Report<'_> {
         if self.notes > 0 {
             writeln!(f, "  Notes:    {}, printed above", self.notes)?;
         }
+        if self.lossless_jpegs_untouched > 0 {
+            writeln!(
+                f,
+                "  JPEGs recompressed losslessly: {}, without grain or pixel -x settings (--reencode-jpeg applies them)",
+                self.lossless_jpegs_untouched
+            )?;
+        }
         if t.sources_deleted > 0 {
             writeln!(f, "  Originals deleted: {}", t.sources_deleted)?;
         }
@@ -235,7 +245,7 @@ impl fmt::Display for Report<'_> {
         if skipped > 0 {
             writeln!(
                 f,
-                "  Skipped:  {skipped}, stopped after a failure (--keep-going continues)"
+                "  Skipped:  {skipped}, stopped after a failure (--fail-fast)"
             )?;
         }
         if self.input_errors > 0 {
@@ -288,6 +298,7 @@ mod tests {
             elapsed: Duration::from_secs(4),
             settings: "lossless, effort 4; 16 threads".into(),
             notes: 0,
+            lossless_jpegs_untouched: 0,
             input_errors: 0,
         }
     }
@@ -382,7 +393,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("  Skipped:  2, stopped after a failure (--keep-going continues)\n"),
+            text.contains("  Skipped:  2, stopped after a failure (--fail-fast)\n"),
             "{text}"
         );
         assert!(

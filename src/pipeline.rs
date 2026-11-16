@@ -207,21 +207,30 @@ fn describe_settings(settings: &EncodeSettings, concurrent: usize) -> String {
 }
 
 fn describe_quality(settings: &EncodeSettings) -> String {
+    let q = settings.quality.get();
     if let Some(avif) = &settings.avif {
-        return format!("CRF {}, preset {}", avif.crf.get(), avif.preset.get());
+        let mut out = format!(
+            "q{q} (CRF {}), preset {}",
+            avif.crf.get(),
+            avif.preset.get()
+        );
+        for (k, v) in &avif.svt {
+            out.push_str(&format!(", -x {k}={v}"));
+        }
+        return out;
     }
-    let quality = if settings.distance.is_lossless() {
+    let mut out = if settings.distance.is_lossless() {
         "lossless".into()
     } else {
-        match settings.epf {
-            Some(epf) => format!("distance {}, EPF {}", settings.distance.get(), epf.value()),
-            None => format!("distance {}", settings.distance.get()),
-        }
+        format!("q{q} (distance {:.3})", settings.distance.get())
     };
-    match settings.max_bit_depth {
-        Some(cap) => format!("{quality}, at most {}-bit", cap.get()),
-        None => quality,
+    for o in &settings.options {
+        out.push_str(&format!(", -x {o}"));
     }
+    if let Some(cap) = settings.max_bit_depth {
+        out.push_str(&format!(", at most {}-bit", cap.get()));
+    }
+    out
 }
 
 /// `7500x5600, 10-bit RGB, ICC, EXIF, XMP, gain map, orientation 6`
@@ -425,7 +434,7 @@ async fn convert_file(
     tracker: FileTracker,
 ) -> Result<WrittenFile, String> {
     let verbose = opts.verbose;
-    let force_lossy_jpeg = opts.force_lossy_jpeg;
+    let reencode_jpeg = opts.reencode_jpeg;
     let settings = &opts.settings;
     let read_started = Instant::now();
     let data = compio::fs::read(path)
@@ -463,7 +472,7 @@ async fn convert_file(
                 tracker: &tracker,
                 page: None,
             };
-            encode_all(&data, format, force_lossy_jpeg, &ctx)
+            encode_all(&data, format, reencode_jpeg, &ctx)
         })
         .await
         .map_err(|e| format!("worker: {e}"))??
@@ -535,7 +544,7 @@ impl FileContext<'_> {
 fn encode_all(
     data: &Arc<Vec<u8>>,
     format: Format,
-    force_lossy_jpeg: bool,
+    reencode_jpeg: bool,
     ctx: &FileContext,
 ) -> Result<Vec<Vec<u8>>, String> {
     ctx.tracker.stage(Stage::Decoding);
@@ -563,7 +572,7 @@ fn encode_all(
         };
         let jxl = match d {
             // AVIF has no JPEG recompression: always decode to pixels.
-            Decoded::Jpeg(jpeg) if force_lossy_jpeg || ctx.settings.avif.is_some() => {
+            Decoded::Jpeg(jpeg) if reencode_jpeg || ctx.settings.avif.is_some() => {
                 encode_pixel_from_jpeg(&jpeg, ctx)?
             }
             Decoded::Jpeg(jpeg) => encode_jpeg(&jpeg, ctx)?,
@@ -599,6 +608,14 @@ fn restore_page(page: Decoded, restorer: &Restorer, path: &Path) -> Result<Decod
     Ok(Decoded::Image(img))
 }
 
+/// JPEGs recompressed losslessly although grain or pixel-only `-x` settings
+/// were asked for; reported once at the end of the run.
+static LOSSLESS_JPEGS_UNTOUCHED: AtomicU64 = AtomicU64::new(0);
+
+pub fn lossless_jpegs_untouched() -> u64 {
+    LOSSLESS_JPEGS_UNTOUCHED.load(Ordering::Relaxed)
+}
+
 /// jbrd recompression, falling back to pixels for JPEGs jbrd cannot
 /// represent (CMYK, arithmetic, ...). Rating needs a pixel decode just for
 /// scoring; the fallback reuses the rating instead of scoring again.
@@ -610,6 +627,9 @@ fn encode_jpeg(jpeg: &[u8], ctx: &FileContext) -> Result<Vec<u8>, String> {
     let started = Instant::now();
     match encode_jbrd(jpeg, ctx, rating.as_ref()) {
         Ok(jxl) => {
+            if ctx.settings.has_pixel_only_settings() {
+                LOSSLESS_JPEGS_UNTOUCHED.fetch_add(1, Ordering::Relaxed);
+            }
             ctx.log_encoded(&jxl, "JPEG recompression", started);
             Ok(jxl)
         }
@@ -702,8 +722,8 @@ fn encode_pixels(
             Err(e) => notice!("note: {}: rating not stored ({e})", ctx.path.display()),
         }
     }
-    // Only lossy pixel frames get grain (see encode_image); cli notes once.
-    // AVIF is always lossy.
+    // Only lossy pixel frames get grain (see encode_image); cli warns about
+    // lossless JPEG XL. AVIF is always lossy.
     let iso = settings
         .noise
         .filter(|_| settings.avif.is_some() || !settings.distance.is_lossless())
@@ -751,7 +771,7 @@ fn log_rating(ctx: &FileContext, rating: &Rating, took: Duration) {
     });
 }
 
-/// libjxl photon-noise ISO for one file: the `--noise-iso` override or the
+/// libjxl photon-noise ISO for one file: the `-g=ISO` override or the
 /// full-frame-equivalent EXIF ISO, scaled by the user's strength.
 fn photon_noise_iso(exif: Option<&[u8]>, noise: NoiseSettings, path: &Path) -> Option<f32> {
     let iso = match noise.iso_override {
@@ -770,9 +790,9 @@ fn metadata_iso(exif: Option<&[u8]>, path: &Path) -> Option<f64> {
         );
         return None;
     };
-    if estimate.crop.is_none() {
-        notice!(
-            "note: {}: no 35 mm-equivalent focal length, ISO {} used without crop correction",
+    if estimate.crop.is_none() && crate::progress::verbose() {
+        log_line!(
+            "{}: no 35 mm-equivalent focal length, ISO {} used without crop correction",
             path.display(),
             estimate.iso
         );

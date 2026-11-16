@@ -107,7 +107,7 @@ fn run_tile(model: &mut Model, tile: &[f32], size: usize) -> Result<Vec<f32>, St
 }
 
 /// Whether a decoded page goes through the model. JPEGs always do; everything
-/// else only with `--dejpeg-all`.
+/// else only with `--dejpeg=all`.
 pub fn selects(page: &Decoded, all: bool) -> bool {
     all || matches!(page, Decoded::Jpeg(_))
 }
