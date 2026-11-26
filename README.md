@@ -17,7 +17,9 @@ To build from source you need Rust 1.93+, CMake, a C++ compiler (libjxl and
 SVT-AV1 are compiled in) and, on x86-64, [NASM](https://nasm.us) 2.14+:
 `cargo install --locked --git https://github.com/Miosp/jxlall`. A clone needs
 `git submodule update --init` for the SVT-AV1 sources. Without NASM, SVT-AV1 is
-built without SIMD and AVIF encoding is several times slower.
+built without SIMD and AVIF encoding is several times slower. Release
+binaries also build SVT-AV1 with clang, LTO and PGO (about 10% faster AVIF
+encodes): see `.github/svt-pgo.sh` and `crates/svt-av1-sys/build.rs`.
 
 ## Inputs
 

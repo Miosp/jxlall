@@ -54,6 +54,14 @@ enum {
     JXLALL_SVT_OUT_OF_MEMORY = 7,
 };
 
+#ifdef JXLALL_SVT_PGO_GENERATE
+/* Instrumented SVT-AV1 (build.rs, JXLALL_SVT_PGO=generate:...): clang's
+ * driver would add this reference so the profile runtime is linked and
+ * writes the profiles at exit; rustc's link does not. */
+extern int __llvm_profile_runtime;
+int *jxlall_svt_profile_runtime = &__llvm_profile_runtime;
+#endif
+
 typedef void (*JxlallSvtLogFn)(int level, const char *message);
 static JxlallSvtLogFn g_log;
 

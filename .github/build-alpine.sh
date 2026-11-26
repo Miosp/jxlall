@@ -4,7 +4,8 @@
 # Docker's seccomp profile blocks io_uring, so the tests also cover the
 # polling fallback. A static binary cannot load ONNX Runtime, so the default
 # `ai` feature is left out. The host cargo registry is mounted so CI can
-# cache it alongside target/. Usage: build-alpine.sh TARGET
+# cache it alongside target/. SVT-AV1 gets the LTO + PGO build (see
+# svt-pgo.sh). Usage: build-alpine.sh TARGET
 set -euo pipefail
 
 # rust:1.99.1-alpine3.24, pinned by digest.
@@ -17,7 +18,10 @@ trap 'sudo chown -R "$(id -u):$(id -g)" target "$registry"' EXIT
 docker run --rm -v "$PWD:/src" -v "$registry:/usr/local/cargo/registry" \
     -w /src -e TARGET="$target" \
     -e RUSTFLAGS="-C target-feature=+crt-static" "$IMAGE" sh -euc '
-        apk add --no-cache build-base cmake linux-headers nasm
+        apk add --no-cache build-base cmake linux-headers nasm bash clang llvm compiler-rt
+        export JXLALL_SVT_LLVM=$(dirname "$(readlink -f "$(command -v clang)")")
+        profile=$(.github/svt-pgo.sh "$TARGET" --no-default-features)
+        export JXLALL_SVT_PGO="use:$profile"
         cargo build --release --locked --no-default-features --target "$TARGET"
         cargo test --release --locked --no-default-features --target "$TARGET"'
 

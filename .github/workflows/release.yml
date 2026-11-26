@@ -85,6 +85,37 @@ jobs:
             Windows) choco install nasm -y --no-progress ;;
           esac
 
+      # LLVM for the optimized SVT-AV1 build (LTO + PGO, see the svt-av1-sys
+      # build script). Windows gets the full official toolchain: the
+      # installer lacks llvm-link.
+      - name: Install LLVM
+        if: ${{ !matrix.alpine }}
+        shell: bash
+        env:
+          LLVM_VERSION: 23.1.6
+        run: |
+          case "$TARGET" in
+            *linux*)
+              sudo apt-get update -qq && sudo apt-get install -y -qq clang-15 llvm-15
+              bin=/usr/lib/llvm-15/bin ;;
+            *apple*)
+              brew install llvm
+              bin="$(brew --prefix llvm)/bin" ;;
+            x86_64-pc-windows-msvc | aarch64-pc-windows-msvc)
+              case "$TARGET" in
+                x86_64*) sha=7623f582089983c1cb51030cf1996514b19464e5669099571b399e8543770155 ;;
+                aarch64*) sha=d3f65e879cd4b1524a0c85c871e0fc26164644b28e618fc341fac7850d48ea38 ;;
+              esac
+              name="clang+llvm-$LLVM_VERSION-$TARGET"
+              curl -fsSL -o "$RUNNER_TEMP/llvm.tar.zst" \
+                "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.zst"
+              echo "$sha  $RUNNER_TEMP/llvm.tar.zst" | sha256sum -c -
+              zstd -dc "$RUNNER_TEMP/llvm.tar.zst" | tar -xf - -C "$RUNNER_TEMP"
+              bin=$(cygpath -m "$RUNNER_TEMP/$name/bin")
+              choco install ninja -y --no-progress ;;
+          esac
+          echo "JXLALL_SVT_LLVM=$bin" >> "$GITHUB_ENV"
+
       - name: Build
         if: ${{ !matrix.alpine }}
         shell: bash
@@ -92,7 +123,8 @@ jobs:
           if [[ $TARGET == *windows* ]]; then
             export RUSTFLAGS="-C target-feature=+crt-static"
           fi
-          cargo build --release --locked --target "$TARGET" $CARGO_FLAGS
+          profile=$(.github/svt-pgo.sh "$TARGET" $CARGO_FLAGS)
+          JXLALL_SVT_PGO="use:$profile" cargo build --release --locked --target "$TARGET" $CARGO_FLAGS
 
       - name: Build (Alpine)
         if: ${{ matrix.alpine }}
