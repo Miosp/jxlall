@@ -19,8 +19,8 @@ use std::process::Command;
 
 const LLVM_ENV: &str = "JXLALL_SVT_LLVM";
 const PGO_ENV: &str = "JXLALL_SVT_PGO";
-/// Leading bytes of a raw LLVM bitcode file.
-const BITCODE_MAGIC: &[u8] = b"BC\xC0\xDE";
+/// Leading bytes of LLVM bitcode: raw, and in the wrapper used for Mach-O.
+const BITCODE_MAGICS: [&[u8]; 2] = [b"BC\xC0\xDE", b"\xDE\xC0\x17\x0B"];
 
 enum Pgo {
     Generate(PathBuf),
@@ -73,10 +73,12 @@ fn main() {
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let msvc = target_env == "msvc";
-    let llvm = env::var_os(LLVM_ENV).map(|bin| Llvm {
-        bin: PathBuf::from(bin),
-        msvc,
-    });
+    let llvm = env::var_os(LLVM_ENV)
+        .filter(|v| !v.is_empty())
+        .map(|bin| Llvm {
+            bin: PathBuf::from(bin),
+            msvc,
+        });
     let pgo = pgo_mode();
     if pgo.is_some() && llvm.is_none() {
         panic!("{PGO_ENV} needs {LLVM_ENV}");
@@ -109,6 +111,9 @@ fn main() {
     }
     if let Some(llvm) = &llvm {
         configure_llvm(&mut cfg, llvm, pgo.as_ref());
+        // Its own CMake build dir: switching generators (Visual Studio vs
+        // Ninja) in one dir fails.
+        cfg.out_dir(PathBuf::from(env::var("OUT_DIR").unwrap()).join("llvm"));
     }
     if arch == "aarch64" && msvc && llvm.is_none() {
         // SVT-AV1's Arm SIMD uses GCC-style -march flags and GNU assembly,
@@ -189,7 +194,7 @@ fn configure_llvm(cfg: &mut cmake::Config, llvm: &Llvm, pgo: Option<&Pgo>) {
         // The Visual Studio generators ignore CMAKE_C_COMPILER.
         cfg.generator("Ninja");
     }
-    let flags: Vec<String> = match pgo {
+    let mut flags: Vec<String> = match pgo {
         // Instrumented builds skip LTO: they only collect profiles.
         Some(Pgo::Generate(dir)) => vec![format!("-fprofile-generate={}", dir.display())],
         Some(Pgo::Use(file)) => vec![
@@ -200,6 +205,11 @@ fn configure_llvm(cfg: &mut cmake::Config, llvm: &Llvm, pgo: Option<&Pgo>) {
         ],
         None => vec!["-flto=thin".into()],
     };
+    if llvm.msvc {
+        // SVT-AV1 adds this GCC-style for identical output across
+        // platforms; clang-cl ignores it without the /clang: prefix.
+        flags.push("-ffp-contract=off".into());
+    }
     for f in flags {
         let f = llvm.flag(&f);
         cfg.cflag(&f).cxxflag(&f);
@@ -220,7 +230,23 @@ fn prelink(llvm: &Llvm, lib: &Path, os: &str) {
     let (bitcode, native): (Vec<PathBuf>, Vec<PathBuf>) = fs::read_dir(&members)
         .unwrap()
         .map(|e| e.unwrap().path())
-        .partition(|p| fs::read(p).unwrap().starts_with(BITCODE_MAGIC));
+        .partition(|p| {
+            let head = fs::read(p).unwrap();
+            BITCODE_MAGICS.iter().any(|m| head.starts_with(m))
+        });
+    // Extraction keeps only file names: same-named members overwrite.
+    let listed = Command::new(llvm.tool("llvm-ar"))
+        .arg("t")
+        .arg(lib)
+        .output()
+        .expect("run llvm-ar t");
+    let member_count = String::from_utf8_lossy(&listed.stdout).lines().count();
+    assert_eq!(
+        member_count,
+        bitcode.len() + native.len(),
+        "{}: members with the same name",
+        lib.display()
+    );
     if bitcode.is_empty() {
         panic!("{}: no bitcode to prelink", lib.display());
     }
@@ -234,12 +260,12 @@ fn prelink(llvm: &Llvm, lib: &Path, os: &str) {
     let mut compile = Command::new(llvm.tool("clang"));
     compile
         .arg(format!("--target={}", env::var("TARGET").unwrap()))
-        .args(["-c", "-O3", "-w"])
+        .args(["-c", "-O3", "-w", "-ffunction-sections", "-fdata-sections"])
         .arg(&merged_bc)
         .arg("-o")
         .arg(&merged);
     if !llvm.msvc {
-        compile.args(["-fPIC", "-ffunction-sections", "-fdata-sections"]);
+        compile.arg("-fPIC");
     }
     run(&mut compile);
 

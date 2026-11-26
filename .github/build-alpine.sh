@@ -19,7 +19,9 @@ docker run --rm -v "$PWD:/src" -v "$registry:/usr/local/cargo/registry" \
     -w /src -e TARGET="$target" \
     -e RUSTFLAGS="-C target-feature=+crt-static" "$IMAGE" sh -euc '
         apk add --no-cache build-base cmake linux-headers nasm bash clang llvm compiler-rt
-        export JXLALL_SVT_LLVM=$(dirname "$(readlink -f "$(command -v clang)")")
+        clang=$(command -v clang)
+        JXLALL_SVT_LLVM=$(dirname "$(readlink -f "$clang")")
+        export JXLALL_SVT_LLVM
         profile=$(.github/svt-pgo.sh "$TARGET" --no-default-features)
         export JXLALL_SVT_PGO="use:$profile"
         cargo build --release --locked --no-default-features --target "$TARGET"
