@@ -24,53 +24,88 @@ fn luma_weights(matrix: u8) -> (f32, f32) {
     }
 }
 
+/// `v.round().clamp(0.0, MAX_10)` without `round`, which the baseline
+/// x86-64 target compiles to a libm call: below 2^23 the fraction of a
+/// clamped, non-negative sample is exact.
+fn round_10(v: f32) -> u16 {
+    let v = v.clamp(0.0, MAX_10);
+    let whole = v as u16;
+    whole + u16::from(v - f32::from(whole) >= 0.5)
+}
+
 fn q(v: f32) -> u16 {
-    (v * MAX_10).round().clamp(0.0, MAX_10) as u16
+    round_10(v * MAX_10)
+}
+
+fn q_chroma(sum: f32, n: u8) -> u16 {
+    round_10(sum / f32::from(n) * MAX_10 + f32::from(CHROMA_ZERO))
 }
 
 /// Color planes; chroma is the mean of each 2x2 block (edge blocks of odd
 /// sizes average the samples they have). H.273 full range: Y = 1023*E'y,
-/// Cb = 1023*E'pb + 512.
-pub fn from_rgb(img: &Rgb16, matrix: u8) -> Planes {
+/// Cb = 1023*E'pb + 512. Bands of rows run on up to `threads` threads.
+pub fn from_rgb(img: &Rgb16, matrix: u8, threads: usize) -> Planes {
     let (w, h) = (img.width as usize, img.height as usize);
+    if w == 0 || h == 0 {
+        return gray_planes(img.width, img.height, Vec::new());
+    }
     let ch = img.channels();
     let (kr, kb) = luma_weights(matrix);
     let kg = 1.0 - kr - kb;
     let (cb_scale, cr_scale) = (0.5 / (1.0 - kb), 0.5 / (1.0 - kr));
     let (cw, chh) = (w.div_ceil(2), h.div_ceil(2));
     let mut y = vec![0u16; w * h];
-    let mut cb = vec![0f32; cw * chh];
-    let mut cr = vec![0f32; cw * chh];
-    let mut count = vec![0u8; cw * chh];
+    let mut u = vec![0u16; cw * chh];
+    let mut v = vec![0u16; cw * chh];
     const NORM: f32 = 1.0 / 65535.0;
-    for row in 0..h {
-        let line = &img.data[row * w * ch..(row + 1) * w * ch];
-        let crow = (row / 2) * cw;
-        for (col, p) in line.chunks_exact(ch).enumerate() {
-            let (r, g, b) = (p[0] as f32 * NORM, p[1] as f32 * NORM, p[2] as f32 * NORM);
-            let luma = kr * r + kg * g + kb * b;
-            y[row * w + col] = q(luma);
-            let ci = crow + col / 2;
-            cb[ci] += (b - luma) * cb_scale;
-            cr[ci] += (r - luma) * cr_scale;
-            count[ci] += 1;
+
+    // One chroma row: its (up to) two luma rows, block by block. Each block
+    // sums its samples in the same order as a row-major scan.
+    let chroma_row = |rgb: &[u16], y: &mut [u16], u: &mut [u16], v: &mut [u16]| {
+        let rows = y.len() / w;
+        for (cx, (u, v)) in u.iter_mut().zip(v.iter_mut()).enumerate() {
+            let (mut cb, mut cr, mut n) = (0f32, 0f32, 0u8);
+            for row in 0..rows {
+                for col in 2 * cx..(2 * cx + 2).min(w) {
+                    let p = &rgb[(row * w + col) * ch..][..3];
+                    let (r, g, b) = (p[0] as f32 * NORM, p[1] as f32 * NORM, p[2] as f32 * NORM);
+                    let luma = kr * r + kg * g + kb * b;
+                    y[row * w + col] = q(luma);
+                    cb += (b - luma) * cb_scale;
+                    cr += (r - luma) * cr_scale;
+                    n += 1;
+                }
+            }
+            *u = q_chroma(cb, n);
+            *v = q_chroma(cr, n);
         }
-    }
-    let chroma = |acc: Vec<f32>| -> Vec<u16> {
-        acc.iter()
-            .zip(&count)
-            .map(|(s, &n)| {
-                let v = s / f32::from(n) * MAX_10 + f32::from(CHROMA_ZERO);
-                v.round().clamp(0.0, MAX_10) as u16
-            })
-            .collect()
     };
+
+    let band = chh.div_ceil(threads.max(1)).max(1);
+    std::thread::scope(|s| {
+        let bands = img
+            .data
+            .chunks(band * 2 * w * ch)
+            .zip(y.chunks_mut(band * 2 * w))
+            .zip(u.chunks_mut(band * cw).zip(v.chunks_mut(band * cw)));
+        for ((rgb, y), (u, v)) in bands {
+            s.spawn(move || {
+                let rows = rgb
+                    .chunks(2 * w * ch)
+                    .zip(y.chunks_mut(2 * w))
+                    .zip(u.chunks_mut(cw).zip(v.chunks_mut(cw)));
+                for ((rgb, y), (u, v)) in rows {
+                    chroma_row(rgb, y, u, v);
+                }
+            });
+        }
+    });
     Planes {
         width: img.width,
         height: img.height,
         y,
-        u: chroma(cb),
-        v: chroma(cr),
+        u,
+        v,
     }
 }
 
@@ -147,21 +182,59 @@ mod tests {
 
     #[test]
     fn white_gray_and_red_bt601() {
-        let p = from_rgb(&rgb(3, 3, [65535; 3]), 6);
+        let p = from_rgb(&rgb(3, 3, [65535; 3]), 6, 1);
         assert!(p.y.iter().all(|&v| v == 1023));
         assert!(p.u.iter().chain(&p.v).all(|&v| v == 512));
         assert_eq!((p.u.len(), p.v.len()), (4, 4));
-        let red = from_rgb(&rgb(2, 2, [65535, 0, 0]), 6);
+        let red = from_rgb(&rgb(2, 2, [65535, 0, 0]), 6, 1);
         assert_eq!(red.y[0], q(0.299));
         assert_eq!(red.v[0], 1023); // Cr = 0.5 -> clamped top
         assert_eq!(red.u[0], (512.0 - 0.299 / 1.772 * 1023.0f32).round() as u16);
     }
 
     #[test]
+    fn round_10_matches_round_then_clamp() {
+        let mut v = -2.0f32;
+        while v < MAX_10 + 2.0 {
+            for x in [
+                v,
+                v.next_down(),
+                v.next_up(),
+                v + 0.5,
+                (v + 0.5).next_down(),
+            ] {
+                assert_eq!(round_10(x), x.round().clamp(0.0, MAX_10) as u16, "{x}");
+            }
+            v += 0.25;
+        }
+        assert_eq!(round_10(f32::NAN), 0);
+    }
+
+    #[test]
+    fn bands_match_a_single_thread() {
+        let (w, h) = (7, 9);
+        for alpha in [false, true] {
+            let ch = if alpha { 4 } else { 3 };
+            let data = (0..w * h * ch).map(|i| (i * 7919 % 65536) as u16).collect();
+            let img = Rgb16 {
+                width: w,
+                height: h,
+                alpha,
+                data,
+            };
+            let one = from_rgb(&img, 6, 1);
+            for threads in [2, 3, 16] {
+                assert_eq!(from_rgb(&img, 6, threads), one, "{threads} threads");
+            }
+        }
+        assert!(from_rgb(&rgb(0, 3, [0; 3]), 6, 4).y.is_empty());
+    }
+
+    #[test]
     fn tile_replicates_edges() {
         let mut img = rgb(3, 1, [0; 3]);
         img.data[6..9].copy_from_slice(&[65535; 3]);
-        let p = from_rgb(&img, 6);
+        let p = from_rgb(&img, 6, 1);
         let t = p.tile(2, 0, 4, 2);
         assert_eq!(t.y, [1023, 1023, 1023, 1023, 1023, 1023, 1023, 1023]);
         assert_eq!(t.u.len(), 2);

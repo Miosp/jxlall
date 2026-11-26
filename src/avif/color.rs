@@ -14,7 +14,7 @@
 
 use super::icc::{self, Primaries, Trc};
 use crate::domain::{ColorDesc, CustomColor, IccSpace};
-use moxcms::{ColorProfile, Layout, RenderingIntent, TransformOptions};
+use moxcms::{ColorProfile, Layout, RenderingIntent, Transform16BitExecutor, TransformOptions};
 
 pub const SRGB_DESCRIPTION: &str = "sRGB IEC61966-2.1";
 pub const P3_DESCRIPTION: &str = "Display P3";
@@ -97,8 +97,14 @@ enum Source {
 }
 
 /// Convert `img` in place to its output space and return the signalling.
-/// `linear_default`: untagged samples are linear (float sources).
-pub fn convert(img: &mut Rgb16, color: &ColorDesc, linear_default: bool) -> Result<Signal, String> {
+/// `linear_default`: untagged samples are linear (float sources). The
+/// transform runs on up to `threads` threads.
+pub fn convert(
+    img: &mut Rgb16,
+    color: &ColorDesc,
+    linear_default: bool,
+    threads: usize,
+) -> Result<Signal, String> {
     let (profile, hint) = match source(color, linear_default) {
         Source::Exact(space) => return Ok(space.signal()),
         Source::Hdr {
@@ -147,7 +153,8 @@ pub fn convert(img: &mut Rgb16, color: &ColorDesc, linear_default: bool) -> Resu
                 }
             })
             .collect();
-        t.transform(&gray_px, &mut img.data)
+        let src_ch = if img.alpha { 2 } else { 1 };
+        transform(&*t, &gray_px, src_ch, &mut img.data, ch, threads)
             .map_err(|e| format!("gray color transform: {e:?}"))?;
     } else {
         let t = profile
@@ -155,10 +162,35 @@ pub fn convert(img: &mut Rgb16, color: &ColorDesc, linear_default: bool) -> Resu
             .map_err(|e| format!("color transform: {e:?}"))?;
         let src = std::mem::take(&mut img.data);
         img.data = vec![0; src.len()];
-        t.transform(&src, &mut img.data)
+        let ch = img.channels();
+        transform(&*t, &src, ch, &mut img.data, ch, threads)
             .map_err(|e| format!("color transform: {e:?}"))?;
     }
     Ok(signal)
+}
+
+/// `t` over `src` into `dst` (`src_ch` and `dst_ch` samples per pixel),
+/// in equal pixel ranges on up to `threads` threads.
+fn transform(
+    t: &Transform16BitExecutor,
+    src: &[u16],
+    src_ch: usize,
+    dst: &mut [u16],
+    dst_ch: usize,
+    threads: usize,
+) -> Result<(), moxcms::CmsError> {
+    let pixels = src.len() / src_ch;
+    let per_thread = pixels.div_ceil(threads.max(1)).max(1);
+    std::thread::scope(|s| {
+        let parts: Vec<_> = src
+            .chunks(per_thread * src_ch)
+            .zip(dst.chunks_mut(per_thread * dst_ch))
+            .map(|(src, dst)| s.spawn(move || t.transform(src, dst)))
+            .collect();
+        parts
+            .into_iter()
+            .try_for_each(|p| p.join().expect("color transform thread panicked"))
+    })
 }
 
 fn parse(icc: &[u8]) -> Option<ColorProfile> {
@@ -284,7 +316,7 @@ mod tests {
     #[test]
     fn untagged_and_srgb_cicp_pass_through() {
         let mut img = px([1000, 2000, 3000]);
-        let s = convert(&mut img, &ColorDesc::default(), false).unwrap();
+        let s = convert(&mut img, &ColorDesc::default(), false, 1).unwrap();
         assert_eq!((s.primaries, s.transfer, s.matrix), (1, 13, 6));
         assert_eq!(img.data, [1000, 2000, 3000]);
         let cicp = ColorDesc::new(
@@ -295,7 +327,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            convert(&mut img, &cicp, false).unwrap().space,
+            convert(&mut img, &cicp, false, 1).unwrap().space,
             Some(Space::P3)
         );
         assert_eq!(img.data, [1000, 2000, 3000]);
@@ -316,7 +348,7 @@ mod tests {
             (icc::cicp_primaries(9).unwrap(), Space::Wide),
         ] {
             let mut img = px([30000; 3]);
-            let s = convert(&mut img, &icc_desc(&p, Trc::Srgb), false).unwrap();
+            let s = convert(&mut img, &icc_desc(&p, Trc::Srgb), false, 1).unwrap();
             assert_eq!(s.space, Some(want), "{p:?}");
             // Neutral gray stays neutral and keeps its level.
             assert!(
@@ -328,12 +360,63 @@ mod tests {
     }
 
     #[test]
+    fn threaded_transform_matches_one_thread() {
+        let data: Vec<u16> = (0..7 * 5 * 3).map(|i| (i * 7919 % 65536) as u16).collect();
+        let run = |threads| {
+            let mut img = Rgb16 {
+                width: 7,
+                height: 5,
+                alpha: false,
+                data: data.clone(),
+            };
+            let desc = icc_desc(&icc::cicp_primaries(9).unwrap(), Trc::Srgb);
+            convert(&mut img, &desc, false, threads).unwrap();
+            img.data
+        };
+        let one = run(1);
+        assert_ne!(one, data);
+        for threads in [2, 3, 64] {
+            assert_eq!(run(threads), one, "{threads} threads");
+        }
+    }
+
+    #[test]
+    fn threaded_gray_transform_matches_one_thread() {
+        let icc = ColorProfile::new_gray_with_gamma(1.8).encode().unwrap();
+        let data: Vec<u16> = (0..7 * 5)
+            .flat_map(|i| [(i * 1931 % 65536) as u16; 3])
+            .collect();
+        let run = |threads| {
+            let mut img = Rgb16 {
+                width: 7,
+                height: 5,
+                alpha: false,
+                data: data.clone(),
+            };
+            convert(
+                &mut img,
+                &ColorDesc::new(None, Some(icc.clone())),
+                false,
+                threads,
+            )
+            .unwrap();
+            img.data
+        };
+        let one = run(1);
+        assert_ne!(one, data);
+        for threads in [2, 3, 64] {
+            assert_eq!(run(threads), one, "{threads} threads");
+        }
+    }
+
+    #[test]
     fn p3_red_is_preserved_in_the_wide_space() {
         let mut img = px([65535, 0, 0]);
         convert(
             &mut img,
             &icc_desc(&icc::DISPLAY_P3, Trc::Gamma(2.2)),
             false,
+            1,
         )
         .unwrap();
         // P3 with a gamma curve is converted to the P3 output (same primaries).
@@ -354,7 +437,7 @@ mod tests {
             }),
             None,
         );
-        let s = convert(&mut img, &pq, false).unwrap();
+        let s = convert(&mut img, &pq, false, 1).unwrap();
         assert_eq!((s.primaries, s.transfer, s.matrix, s.icc), (9, 16, 9, None));
         assert_eq!(img.data, [1, 2, 3]);
     }
@@ -362,7 +445,7 @@ mod tests {
     #[test]
     fn linear_float_default_is_encoded_to_srgb() {
         let mut img = px([65535 / 2; 3]);
-        convert(&mut img, &ColorDesc::default(), true).unwrap();
+        convert(&mut img, &ColorDesc::default(), true, 1).unwrap();
         // Linear 0.5 is sRGB ~0.735.
         assert!(
             img.data.iter().all(|&v| v.abs_diff(48200) < 300),

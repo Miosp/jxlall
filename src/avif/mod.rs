@@ -159,7 +159,7 @@ pub fn encode(
         let (data, w, h) = orient::apply(&img.data, img.width, img.height, img.channels(), o);
         (img.data, img.width, img.height) = (data, w, h);
     }
-    let signal = color::convert(&mut img, &color, linear_default)?;
+    let signal = color::convert(&mut img, &color, linear_default, threads)?;
     let space = match signal.space {
         Some(color::Space::Srgb) => "sRGB",
         Some(color::Space::P3) => "Display P3",
@@ -204,7 +204,7 @@ pub fn encode(
     // Grain is calibrated for the SDR sRGB curve.
     let grain_iso = grain_iso.filter(|_| signal.space.is_some());
     let (width, height) = (img.width, img.height);
-    let planes = yuv::from_rgb(&img, signal.matrix);
+    let planes = yuv::from_rgb(&img, signal.matrix, threads);
     let alpha_planes = img.alpha.then(|| yuv::from_alpha(&img));
     // The 16-bit RGB copy is as large as the planes: free it before SVT-AV1
     // allocates its own buffers.
