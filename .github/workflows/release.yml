@@ -110,7 +110,8 @@ jobs:
               curl -fsSL -o "$RUNNER_TEMP/llvm.tar.zst" \
                 "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.zst"
               echo "$sha  $RUNNER_TEMP/llvm.tar.zst" | sha256sum -c -
-              zstd -dc --long=30 "$RUNNER_TEMP/llvm.tar.zst" | tar -xf - -C "$RUNNER_TEMP"
+              # GNU tar reads a drive letter in -C as a remote host.
+              (cd "$RUNNER_TEMP" && zstd -dc --long=30 llvm.tar.zst | tar -xf -)
               bin=$(cygpath -m "$RUNNER_TEMP/$name/bin")
               choco install ninja -y --no-progress ;;
           esac

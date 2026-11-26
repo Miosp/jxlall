@@ -190,9 +190,14 @@ fn configure_llvm(cfg: &mut cmake::Config, llvm: &Llvm, pgo: Option<&Pgo>) {
     let cc = llvm.cc();
     cfg.define("CMAKE_C_COMPILER", &cc)
         .define("CMAKE_CXX_COMPILER", &cc);
+    // Only LLVM's archivers index bitcode (Apple's ar and lib.exe do not).
     if llvm.msvc {
         // The Visual Studio generators ignore CMAKE_C_COMPILER.
-        cfg.generator("Ninja");
+        cfg.generator("Ninja")
+            .define("CMAKE_AR", llvm.tool("llvm-lib"));
+    } else {
+        cfg.define("CMAKE_AR", llvm.tool("llvm-ar"))
+            .define("CMAKE_RANLIB", llvm.tool("llvm-ranlib"));
     }
     let mut flags: Vec<String> = match pgo {
         // Instrumented builds skip LTO: they only collect profiles.
