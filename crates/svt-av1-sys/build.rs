@@ -117,10 +117,10 @@ fn main() {
     }
     if arch == "aarch64" && msvc {
         match &llvm {
-            // CMake finds no assembler for clang-cl; the GNU-style driver
-            // builds the GNU assembly.
+            // CMake finds no assembler for clang-cl on its own, and its
+            // MSVC-platform ASM rules need clang-cl's command line.
             Some(llvm) => {
-                cfg.define("CMAKE_ASM_COMPILER", llvm.tool("clang"));
+                cfg.define("CMAKE_ASM_COMPILER", llvm.cc());
             }
             // SVT-AV1's Arm SIMD uses GCC-style -march flags and GNU
             // assembly, which cl.exe cannot build.
