@@ -10,12 +10,6 @@ pub struct Remote {
     pub size: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveFormat {
-    Zip,
-    TarGz,
-}
-
 /// One library inside an archive, extracted under a fixed name. Linux names are
 /// SONAMEs: dependents find an already loaded library by its SONAME.
 pub struct ArchiveFile {
@@ -25,14 +19,23 @@ pub struct ArchiveFile {
     pub size: u64,
 }
 
-/// A downloadable archive, of which only the listed files are used.
+/// How an archive reaches the cache.
+pub enum Transfer {
+    /// Downloaded whole and verified before extraction.
+    Whole { sha256: &'static str },
+    /// A zip read in place with HTTP range requests, so only the listed files
+    /// cross the network. The archive is identified by its size alone; the
+    /// listed files stay pinned.
+    ZipRanges,
+}
+
+/// A downloadable zip, of which only the listed files are used.
 pub struct Archive {
     /// Cache directory name; changes whenever the content does.
     pub id: &'static str,
     pub url: &'static str,
-    pub sha256: &'static str,
     pub size: u64,
-    pub format: ArchiveFormat,
+    pub transfer: Transfer,
     pub files: &'static [ArchiveFile],
 }
 
@@ -56,15 +59,18 @@ pub static DEJPEG_V2: Remote = Remote {
     sha256: "cc345b6ce3a4b70856358911fed69ccebe939c1381aa94d969f15e2d81394690",
     size: 15_376_612,
 };
+/// The official NuGet package carries the core for every platform; each
+/// platform reads only its own library out of it.
+const CORE_NUGET_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.1/microsoft.ml.onnxruntime.1.31.1.nupkg";
+const CORE_NUGET_SIZE: u64 = 159_626_394;
 
 static CORE_LINUX_X64: Archive = Archive {
     id: "onnxruntime-1.31.1-linux-x64",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-linux-x64-1.31.1.tgz",
-    sha256: "c849e36a1ef3e22d4ff217b9d1ce4a3cf5b9467b975610913ae959ad5b16bdc9",
-    size: 11_413_655,
-    format: ArchiveFormat::TarGz,
+    url: CORE_NUGET_URL,
+    size: CORE_NUGET_SIZE,
+    transfer: Transfer::ZipRanges,
     files: &[ArchiveFile {
-        entry: "onnxruntime-linux-x64-1.31.1/lib/libonnxruntime.so.1.31.1",
+        entry: "runtimes/linux-x64/native/libonnxruntime.so",
         name: "libonnxruntime.so.1.31.1",
         sha256: "a96f132e5eb5ca04e23a7d2fc1078fb95aa591e8d71d0f237702ece3a1e0f4ea",
         size: 29_345_384,
@@ -73,12 +79,11 @@ static CORE_LINUX_X64: Archive = Archive {
 
 static CORE_LINUX_ARM64: Archive = Archive {
     id: "onnxruntime-1.31.1-linux-aarch64",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-linux-aarch64-1.31.1.tgz",
-    sha256: "5317505e2da99be65f8e2775ba3c2afd6d2961fd78aba1bd8f56159f48820c78",
-    size: 10_332_381,
-    format: ArchiveFormat::TarGz,
+    url: CORE_NUGET_URL,
+    size: CORE_NUGET_SIZE,
+    transfer: Transfer::ZipRanges,
     files: &[ArchiveFile {
-        entry: "onnxruntime-linux-aarch64-1.31.1/lib/libonnxruntime.so.1.31.1",
+        entry: "runtimes/linux-arm64/native/libonnxruntime.so",
         name: "libonnxruntime.so.1.31.1",
         sha256: "7e17c55d675be73f67a218dbecb55522395f61dafb3da03ebc7ade56a4c2f813",
         size: 25_266_408,
@@ -86,27 +91,25 @@ static CORE_LINUX_ARM64: Archive = Archive {
 };
 
 static CORE_MACOS_ARM64: Archive = Archive {
-    id: "onnxruntime-1.31.1-osx-arm64",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-osx-arm64-1.31.1.tgz",
-    sha256: "2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f",
-    size: 36_936_435,
-    format: ArchiveFormat::TarGz,
+    id: "onnxruntime-1.31.1-osx-arm64-nuget",
+    url: CORE_NUGET_URL,
+    size: CORE_NUGET_SIZE,
+    transfer: Transfer::ZipRanges,
     files: &[ArchiveFile {
-        entry: "onnxruntime-osx-arm64-1.31.1/lib/libonnxruntime.1.31.1.dylib",
+        entry: "runtimes/osx-arm64/native/libonnxruntime.dylib",
         name: "libonnxruntime.1.31.1.dylib",
-        sha256: "17500d6b1e37e70f43a2c57d94233a1bc29fbcb297be0a5f8c7c13184f3307ba",
-        size: 44_797_256,
+        sha256: "2685dc296147c47b0dbd8e0615547b12fc0c445d158d1f374cbd0705d9626fdc",
+        size: 44_830_288,
     }],
 };
 
 static CORE_WINDOWS_X64: Archive = Archive {
     id: "onnxruntime-1.31.1-win-x64",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-x64-1.31.1.zip",
-    sha256: "5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c",
-    size: 82_929_944,
-    format: ArchiveFormat::Zip,
+    url: CORE_NUGET_URL,
+    size: CORE_NUGET_SIZE,
+    transfer: Transfer::ZipRanges,
     files: &[ArchiveFile {
-        entry: "onnxruntime-win-x64-1.31.1/lib/onnxruntime.dll",
+        entry: "runtimes/win-x64/native/onnxruntime.dll",
         name: "onnxruntime.dll",
         sha256: "cb2fa518b18356617f6f9f460c012501da2819ec7e5c1d80bd8f5de20492db0c",
         size: 17_253_728,
@@ -115,12 +118,11 @@ static CORE_WINDOWS_X64: Archive = Archive {
 
 static CORE_WINDOWS_ARM64: Archive = Archive {
     id: "onnxruntime-1.31.1-win-arm64",
-    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-arm64-1.31.1.zip",
-    sha256: "817f4129073f84f81cde3ff92b1a4e06d007691e7208deed08a8b6d6df143f7f",
-    size: 85_851_069,
-    format: ArchiveFormat::Zip,
+    url: CORE_NUGET_URL,
+    size: CORE_NUGET_SIZE,
+    transfer: Transfer::ZipRanges,
     files: &[ArchiveFile {
-        entry: "onnxruntime-win-arm64-1.31.1/lib/onnxruntime.dll",
+        entry: "runtimes/win-arm64/native/onnxruntime.dll",
         name: "onnxruntime.dll",
         sha256: "3ec71b45c71ed057096f4914fddb379a38b9ec813794052b96fec7de81e2ea20",
         size: 17_507_640,
@@ -131,9 +133,10 @@ static WEBGPU_LINUX_X64: Plugin = Plugin {
     archive: &Archive {
         id: "webgpu-ep-0.5.0-linux-x64",
         url: "https://files.pythonhosted.org/packages/e2/1d/ac0ccbe8bd6435b6e1946fea964790ffa3d73ee2513775e90958fd6b860e/onnxruntime_ep_webgpu-0.5.0-py3-none-manylinux_2_28_x86_64.whl",
-        sha256: "b6baa3e223d9a679023388b1179e5597b6bc0d282ba72f2afe38d46ef37deeb4",
         size: 6_935_993,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "b6baa3e223d9a679023388b1179e5597b6bc0d282ba72f2afe38d46ef37deeb4",
+        },
         files: &[ArchiveFile {
             entry: "onnxruntime_ep_webgpu/libonnxruntime_providers_webgpu.so",
             name: "libonnxruntime_providers_webgpu.so",
@@ -150,9 +153,10 @@ static WEBGPU_LINUX_ARM64: Plugin = Plugin {
     archive: &Archive {
         id: "webgpu-ep-0.5.0-linux-aarch64",
         url: "https://files.pythonhosted.org/packages/93/ca/71f305dc822d62ef33d7f3862ba7058a0099086112d9ab679d8252e7b77d/onnxruntime_ep_webgpu-0.5.0-py3-none-manylinux_2_28_aarch64.whl",
-        sha256: "d39e0769f8b2ff7a4b04a492ef882510474d52cf722408d393569b36558b2829",
         size: 6_107_612,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "d39e0769f8b2ff7a4b04a492ef882510474d52cf722408d393569b36558b2829",
+        },
         files: &[ArchiveFile {
             entry: "onnxruntime_ep_webgpu/libonnxruntime_providers_webgpu.so",
             name: "libonnxruntime_providers_webgpu.so",
@@ -169,9 +173,10 @@ static WEBGPU_MACOS: Plugin = Plugin {
     archive: &Archive {
         id: "webgpu-ep-0.5.0-macos",
         url: "https://files.pythonhosted.org/packages/2c/c3/e047d38981e7d6f198f92b488e2c9cd12e45c73017ec851996ea69778922/onnxruntime_ep_webgpu-0.5.0-py3-none-macosx_14_0_universal2.whl",
-        sha256: "c9a757c7afaf114fde86993420810ff616e2d3046d42ae419bb0c8b9ebcf57fb",
         size: 4_864_395,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "c9a757c7afaf114fde86993420810ff616e2d3046d42ae419bb0c8b9ebcf57fb",
+        },
         files: &[ArchiveFile {
             entry: "onnxruntime_ep_webgpu/libonnxruntime_providers_webgpu.dylib",
             name: "libonnxruntime_providers_webgpu.dylib",
@@ -188,9 +193,10 @@ static WEBGPU_WINDOWS_X64: Plugin = Plugin {
     archive: &Archive {
         id: "webgpu-ep-0.5.0-win-x64",
         url: "https://files.pythonhosted.org/packages/7e/36/9935a5b7851099da3da81d9e04f3021bcc61a5a1039e6c098cf08e5c6607/onnxruntime_ep_webgpu-0.5.0-py3-none-win_amd64.whl",
-        sha256: "713b94e7b4ce5979a356e19b926ecba2c0d4ba24f857ef4bbb11c75c37cc5b61",
         size: 13_608_886,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "713b94e7b4ce5979a356e19b926ecba2c0d4ba24f857ef4bbb11c75c37cc5b61",
+        },
         files: &[
             ArchiveFile {
                 entry: "onnxruntime_ep_webgpu/dxcompiler.dll",
@@ -215,9 +221,10 @@ static WEBGPU_WINDOWS_ARM64: Plugin = Plugin {
     archive: &Archive {
         id: "webgpu-ep-0.5.0-win-arm64",
         url: "https://files.pythonhosted.org/packages/b1/f2/f62eb9fde3b790507da4e1c4a3f366ea8e69b3b424fe70e97c898dd8f9c2/onnxruntime_ep_webgpu-0.5.0-py3-none-win_arm64.whl",
-        sha256: "928b3849a52403b5ccee3264a721a104c0fa3ebebb1e725d486e9dc6611f848e",
         size: 14_582_521,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "928b3849a52403b5ccee3264a721a104c0fa3ebebb1e725d486e9dc6611f848e",
+        },
         files: &[
             ArchiveFile {
                 entry: "onnxruntime_ep_webgpu/dxcompiler.dll",
@@ -249,9 +256,10 @@ static TENSORRT_LINUX_X64: Plugin = Plugin {
     archive: &Archive {
         id: "tensorrt-rtx-ep-0.5.0-cu13-linux-x64",
         url: "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13-linux-x86_64.zip",
-        sha256: "141b500bbbb6cd8b61d76f25f778e86611de02d3b02a9a2d38620191c85736a7",
         size: 146_510_199,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "141b500bbbb6cd8b61d76f25f778e86611de02d3b02a9a2d38620191c85736a7",
+        },
         files: &[
             ArchiveFile {
                 entry: "TensorRT-RTX-EP-ABI-v0.5.0-cu13-linux-x86_64/libcudart.so.13.4.36",
@@ -300,9 +308,10 @@ static TENSORRT_LINUX_ARM64: Plugin = Plugin {
     archive: &Archive {
         id: "tensorrt-rtx-ep-0.5.0-cu13-linux-aarch64",
         url: "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13-linux-aarch64.zip",
-        sha256: "2a4aa054d5ddb580d2ffabe1b07977534abb869960d0f88f49df27b5354e8bc0",
         size: 134_888_826,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "2a4aa054d5ddb580d2ffabe1b07977534abb869960d0f88f49df27b5354e8bc0",
+        },
         files: &[
             ArchiveFile {
                 entry: "TensorRT-RTX-EP-ABI-v0.5.0-cu13-linux-aarch64/libcudart.so.13.4.46",
@@ -351,9 +360,10 @@ static TENSORRT_WINDOWS_X64: Plugin = Plugin {
     archive: &Archive {
         id: "tensorrt-rtx-ep-0.5.0-cu13-win-x64",
         url: "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13.zip",
-        sha256: "41469e0b21cabf997cbee3638d9aa4400ae19601667e18ccf6628a960fb0aca3",
         size: 112_819_790,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "41469e0b21cabf997cbee3638d9aa4400ae19601667e18ccf6628a960fb0aca3",
+        },
         files: &[
             ArchiveFile {
                 entry: "TensorRT-RTX-EP-ABI-v0.5.0-cu13/tensorrt_rtx_1_7.dll",
@@ -390,9 +400,10 @@ static TENSORRT_WINDOWS_ARM64: Plugin = Plugin {
     archive: &Archive {
         id: "tensorrt-rtx-ep-0.5.0-cu13-win-arm64",
         url: "https://github.com/NVIDIA/TensorRT-RTX-EP-ABI/releases/download/v0.5.0/TensorRT-RTX-EP-ABI-v0.5.0-cu13-win-arm64.zip",
-        sha256: "7d7fbea88138f77eb3b6ab40fc84326be119b7ea6483bcb85917968819f263dc",
         size: 100_423_694,
-        format: ArchiveFormat::Zip,
+        transfer: Transfer::Whole {
+            sha256: "7d7fbea88138f77eb3b6ab40fc84326be119b7ea6483bcb85917968819f263dc",
+        },
         files: &[
             ArchiveFile {
                 entry: "TensorRT-RTX-EP-ABI-v0.5.0-cu13-win-arm64/tensorrt_rtx_1_7.dll",
@@ -474,7 +485,10 @@ mod tests {
     }
 
     fn assert_archive(archive: &Archive) {
-        assert_pin(archive.sha256, archive.size);
+        assert!(archive.size > 0);
+        if let Transfer::Whole { sha256 } = archive.transfer {
+            assert_pin(sha256, archive.size);
+        }
         assert!(!archive.files.is_empty());
         for file in archive.files {
             assert_pin(file.sha256, file.size);
