@@ -123,6 +123,9 @@ jobs:
         run: |
           if [[ $TARGET == *windows* ]]; then
             export RUSTFLAGS="-C target-feature=+crt-static"
+            # Git's MinGW clang on PATH would build ring, which then gets the
+            # clang-cl flags from .cargo/config.toml.
+            PATH=$(tr ':' '\n' <<< "$PATH" | grep -v 'clangarm64' | paste -sd:)
           fi
           profile=$(.github/svt-pgo.sh "$TARGET" $CARGO_FLAGS)
           JXLALL_SVT_PGO="use:$profile" cargo build --release --locked --target "$TARGET" $CARGO_FLAGS

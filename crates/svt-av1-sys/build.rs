@@ -257,8 +257,19 @@ fn prelink(llvm: &Llvm, lib: &Path, os: &str) {
     }
 
     let merged_bc = work.join("svt.bc");
+    // A response file: hundreds of object paths overflow Windows' command
+    // line. Quoted forward-slash paths read the same under GNU and Windows
+    // tokenizing.
+    let rsp = work.join("link.rsp");
+    let quoted: Vec<String> = bitcode
+        .iter()
+        .map(|p| format!("\"{}\"", p.display().to_string().replace('\\', "/")))
+        .collect();
+    fs::write(&rsp, quoted.join("\n")).unwrap();
+    let mut rsp_arg = std::ffi::OsString::from("@");
+    rsp_arg.push(&rsp);
     run(Command::new(llvm.tool("llvm-link"))
-        .args(&bitcode)
+        .arg(rsp_arg)
         .arg("-o")
         .arg(&merged_bc));
     let merged = work.join(if llvm.msvc { "svt.obj" } else { "svt.o" });
