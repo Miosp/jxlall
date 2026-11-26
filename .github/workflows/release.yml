@@ -125,9 +125,12 @@ jobs:
             export RUSTFLAGS="-C target-feature=+crt-static"
           fi
           if [[ $TARGET == aarch64-pc-windows-msvc ]]; then
-            # ring otherwise picks a GNU-style clang from PATH, which rejects
-            # the clang-cl flags in .cargo/config.toml.
-            export CC_aarch64_pc_windows_msvc="$JXLALL_SVT_LLVM/clang-cl.exe"
+            # ring compiles with a GNU-style clang here, which rejects the
+            # clang-cl `-clang:` flags in .cargo/config.toml. A config file
+            # works for both drivers and escapes the cmake crate's -O filter.
+            printf -- '-O2 -DNDEBUG\n' > "$RUNNER_TEMP/opt.cfg"
+            opt="--config=$(cygpath -m "$RUNNER_TEMP/opt.cfg")"
+            export CFLAGS_aarch64_pc_windows_msvc="$opt" CXXFLAGS_aarch64_pc_windows_msvc="$opt"
           fi
           profile=$(.github/svt-pgo.sh "$TARGET" $CARGO_FLAGS)
           JXLALL_SVT_PGO="use:$profile" cargo build --release --locked --target "$TARGET" $CARGO_FLAGS
