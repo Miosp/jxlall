@@ -115,10 +115,19 @@ fn main() {
         // Ninja) in one dir fails.
         cfg.out_dir(PathBuf::from(env::var("OUT_DIR").unwrap()).join("llvm"));
     }
-    if arch == "aarch64" && msvc && llvm.is_none() {
-        // SVT-AV1's Arm SIMD uses GCC-style -march flags and GNU assembly,
-        // which cl.exe cannot build.
-        cfg.define("COMPILE_C_ONLY", "ON");
+    if arch == "aarch64" && msvc {
+        match &llvm {
+            // CMake finds no assembler for clang-cl; the GNU-style driver
+            // builds the GNU assembly.
+            Some(llvm) => {
+                cfg.define("CMAKE_ASM_COMPILER", llvm.tool("clang"));
+            }
+            // SVT-AV1's Arm SIMD uses GCC-style -march flags and GNU
+            // assembly, which cl.exe cannot build.
+            None => {
+                cfg.define("COMPILE_C_ONLY", "ON");
+            }
+        }
     } else if arch == "x86_64" {
         match find_nasm() {
             Some(nasm) => {
