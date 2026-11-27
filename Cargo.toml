@@ -32,8 +32,6 @@ ureq = { version = "3.5", optional = true }
 directories = { version = "6", optional = true }
 sha2 = { version = "0.11", optional = true }
 zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
-flate2 = { version = "1", optional = true }
-tar = { version = "0.4", optional = true }
 indicatif = { version = "0.18.6", default-features = false, features = ["unicode-width"] }
 moxcms = "0.9"
 svt-av1-tritium-sys = { path = "crates/svt-av1-sys" }
@@ -43,7 +41,7 @@ default = ["ai"]
 # --dejpeg and --iqa load ONNX Runtime at run time. Static musl binaries cannot
 # load shared libraries and x86_64 macOS has no official core; build those
 # without this feature.
-ai = ["dep:ort", "dep:libloading", "dep:ureq", "dep:directories", "dep:sha2", "dep:zip", "dep:flate2", "dep:tar"]
+ai = ["dep:ort", "dep:libloading", "dep:ureq", "dep:directories", "dep:sha2", "dep:zip"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
