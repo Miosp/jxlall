@@ -1,5 +1,6 @@
-# Pushing a tag vX.Y.Z builds every target natively and publishes a GitHub
-# release. A manual run builds and smoke-tests everything without publishing.
+# Pushing a tag vX.Y.Z builds every target natively and creates a draft
+# GitHub release to review and publish. A manual run builds and smoke-tests
+# everything without creating a release.
 name: Release
 
 on:
@@ -190,4 +191,4 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "$TAG" --generate-notes
+            --verify-tag --title "$TAG" --generate-notes --draft
