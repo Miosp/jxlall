@@ -84,14 +84,26 @@ fn main() {
         panic!("{PGO_ENV} needs {LLVM_ENV}");
     }
 
+    // Its own CMake build dir for the LLVM build: switching generators
+    // (Visual Studio vs Ninja) in one dir fails.
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let cmake_out = if llvm.is_some() {
+        out_dir.join("llvm")
+    } else {
+        out_dir
+    };
     let mut cfg = cmake::Config::new(&src);
-    cfg.profile("Release")
+    cfg.out_dir(&cmake_out)
+        .profile("Release")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("BUILD_APPS", "OFF")
         .define("BUILD_TESTING", "OFF")
         .define("SVT_AV1_LTO", "OFF")
         .define("EXCLUDE_HASH", "ON")
-        .define("CMAKE_INSTALL_LIBDIR", "lib");
+        .define("CMAKE_INSTALL_LIBDIR", "lib")
+        // SVT-AV1 otherwise writes the library into its source tree, shared
+        // by every build (target, profile, LLVM or not).
+        .define("CMAKE_OUTPUT_DIRECTORY", cmake_out.join("bin"));
     if msvc {
         // SVT-AV1's CMake (policy CMP0091) picks the C runtime from this
         // variable and ignores the /MT flag the cmake crate adds, so a
@@ -111,9 +123,6 @@ fn main() {
     }
     if let Some(llvm) = &llvm {
         configure_llvm(&mut cfg, llvm, pgo.as_ref());
-        // Its own CMake build dir: switching generators (Visual Studio vs
-        // Ninja) in one dir fails.
-        cfg.out_dir(PathBuf::from(env::var("OUT_DIR").unwrap()).join("llvm"));
     }
     if arch == "aarch64" && msvc {
         match &llvm {
