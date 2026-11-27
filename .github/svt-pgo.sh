@@ -24,6 +24,9 @@ EFFORTS="4 6 8"
 JXLALL_SVT_PGO="generate:$work/raw" \
     cargo build --release --locked --target "$target" "$@" >&2
 bin="$target_dir/$target/release/jxlall"
+# One raw profile per process: instrumented runs on Windows ARM64 crash
+# merging into an existing one.
+export LLVM_PROFILE_FILE="$work/raw/jxlall-%p.profraw"
 for e in $EFFORTS; do
     "$bin" -f avif -e "$e" -o "$work/out-$e" pgo/photos >&2
 done
