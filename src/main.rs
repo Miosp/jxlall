@@ -1,9 +1,10 @@
-//! CLI entry: discover inputs, convert to JXL, print summary.
+//! CLI entry: discover inputs, convert to JXL or AVIF, print summary.
 
 #[macro_use]
 mod progress;
 
 mod ai;
+mod avif;
 mod cli;
 mod decode;
 mod domain;
@@ -11,6 +12,7 @@ mod encode;
 mod format;
 mod inputs;
 mod pipeline;
+mod quality;
 mod sniff;
 mod stats;
 
@@ -81,6 +83,7 @@ fn main() -> ExitCode {
         elapsed: summary.elapsed,
         settings: summary.settings,
         notes: progress::notes(),
+        lossless_jpegs_untouched: pipeline::lossless_jpegs_untouched(),
         input_errors,
     };
     // A closed stdout must not turn a finished run into a panic.

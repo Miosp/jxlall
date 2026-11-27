@@ -4,8 +4,12 @@ version = "0.2.1"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT"
-description = "Convert a photo library to JPEG XL, keeping pixels, color and metadata"
+description = "Convert a photo library to JPEG XL or AVIF, keeping pixels, color and metadata"
 repository = "https://github.com/Miosp/jxlall"
+
+[workspace]
+# SVT-AV1 build for AVIF output; shares this lockfile and target dir.
+members = ["crates/svt-av1-sys"]
 
 [dependencies]
 compio = { version = "0.19", features = ["runtime", "fs", "polling"] }
@@ -29,6 +33,8 @@ directories = { version = "6", optional = true }
 sha2 = { version = "0.11", optional = true }
 zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 indicatif = { version = "0.18.6", default-features = false, features = ["unicode-width"] }
+moxcms = "0.9"
+svt-av1-tritium-sys = { path = "crates/svt-av1-sys" }
 
 [features]
 default = ["ai"]

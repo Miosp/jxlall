@@ -21,6 +21,8 @@ allow = [
     "ISC",
     "CDLA-Permissive-2.0",
     "MPL-2.0",
+    # SVT-AV1 (AVIF encoder), statically linked through crates/svt-av1-sys.
+    "BSD-3-Clause-Clear",
 ]
 
 [bans]
