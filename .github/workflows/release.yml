@@ -131,6 +131,9 @@ jobs:
             printf -- '-O2 -DNDEBUG\n' > "$RUNNER_TEMP/opt.cfg"
             opt="--config=$(cygpath -m "$RUNNER_TEMP/opt.cfg")"
             export CFLAGS_aarch64_pc_windows_msvc="$opt" CXXFLAGS_aarch64_pc_windows_msvc="$opt"
+            # link.exe leaves the instrumented binary's profile name data
+            # unreadable on ARM64.
+            export CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER="$JXLALL_SVT_LLVM/lld-link.exe"
           fi
           profile=$(.github/svt-pgo.sh "$TARGET" $CARGO_FLAGS)
           JXLALL_SVT_PGO="use:$profile" cargo build --release --locked --target "$TARGET" $CARGO_FLAGS
